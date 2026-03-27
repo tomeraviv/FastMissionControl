@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct FastMissionControlApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: appDelegate.appModel)
         }
+        .windowResizability(.contentSize)
     }
 }
