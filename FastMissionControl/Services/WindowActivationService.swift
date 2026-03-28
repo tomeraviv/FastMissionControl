@@ -57,39 +57,6 @@ final class WindowActivationService {
         )
     }
 
-    /// Pre-raise the window on hover so the click path is near-zero.
-    /// Sets the AX main/focused/raise attributes ahead of time — the
-    /// window won't actually appear because our overlay is on top.
-    private var preRaisedPid: pid_t?
-    func preRaise(descriptor: WindowDescriptor) {
-        ensureAXHandle(for: descriptor)
-        guard let handle = descriptor.axWindow else { return }
-        let application = AXUIElementCreateApplication(descriptor.pid)
-        _ = AXUIElementSetAttributeValue(handle.element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, handle.element)
-        _ = AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString)
-        preRaisedPid = descriptor.pid
-    }
-
-    func preRaise(windowID: CGWindowID, pid: pid_t) {
-        guard let cgFrame = cgWindowFrame(for: windowID) else { return }
-        if cachedHandlesByPID[pid] == nil {
-            cachedHandlesByPID[pid] = loadAXWindows(for: pid)
-        }
-        guard let best = closestHandle(to: cgFrame, among: cachedHandlesByPID[pid] ?? []) else { return }
-        let application = AXUIElementCreateApplication(pid)
-        _ = AXUIElementSetAttributeValue(best.element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, best.element)
-        _ = AXUIElementPerformAction(best.element, kAXRaiseAction as CFString)
-        preRaisedPid = pid
-    }
-
-    var currentPreRaisedPid: pid_t? { preRaisedPid }
-
-    func clearPreRaise() {
-        preRaisedPid = nil
-    }
-
     // MARK: - Raise (call AFTER overlay is hidden, synchronously)
 
     /// Raise the specific window via its pre-resolved (or lazily resolved)

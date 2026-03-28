@@ -14,18 +14,11 @@ import CoreGraphics
 /// Overlaps are resolved iteratively by pushing windows apart.
 /// Windows are never enlarged past their original size.
 final class SpatialOverviewLayout {
-    private let horizontalPadding: CGFloat = 48
-    private let topPadding: CGFloat = 48
-    private let bottomPadding: CGFloat = 130   // room for shelf row + dock
-    private let titleBarGap: CGFloat = 6
-    private let titleBarHeight: CGFloat = 40
-    /// Default gap at low window counts; `adaptiveSpacing` tightens for denser grids.
-    private let baseWindowSpacing: CGFloat = 18
-    private let overlapIterations = 80
-    /// When total source area is this much larger than the union bounding box,
-    /// windows overlap heavily in screen space — use grid packing instead of
-    /// proportional mapping + overlap push (which bunches large thumbnails).
-    private let overlapDensityGridThreshold: CGFloat = 1.3
+    private let settings: AppSettings
+
+    init(settings: AppSettings) {
+        self.settings = settings
+    }
 
     func apply(to snapshot: OverviewSnapshot) {
         let windowsByDisplay = Dictionary(grouping: snapshot.windows, by: \.displayID)
@@ -426,5 +419,37 @@ final class SpatialOverviewLayout {
     private func clampToBounds(_ frame: inout CGRect, in bounds: CGRect) {
         frame.origin.x = max(bounds.minX, min(frame.origin.x, bounds.maxX - frame.width))
         frame.origin.y = max(bounds.minY, min(frame.origin.y, bounds.maxY - frame.height))
+    }
+
+    private var horizontalPadding: CGFloat {
+        settings.layoutHorizontalPadding
+    }
+
+    private var topPadding: CGFloat {
+        settings.layoutTopPadding
+    }
+
+    private var bottomPadding: CGFloat {
+        settings.layoutBottomPadding
+    }
+
+    private var titleBarGap: CGFloat {
+        settings.layoutTitleBarGap
+    }
+
+    private var titleBarHeight: CGFloat {
+        settings.layoutTitleBarHeight
+    }
+
+    private var baseWindowSpacing: CGFloat {
+        settings.layoutBaseWindowSpacing
+    }
+
+    private var overlapIterations: Int {
+        settings.layoutOverlapIterations
+    }
+
+    private var overlapDensityGridThreshold: CGFloat {
+        settings.layoutOverlapDensityGridThreshold
     }
 }

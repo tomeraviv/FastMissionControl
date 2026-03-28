@@ -9,8 +9,6 @@ import AppKit
 
 @MainActor
 final class OverviewWindowController {
-    static let openAnimationDurationNanoseconds: UInt64 = 220_000_000
-
     private var panelControllers: [OverviewDisplayPanelController] = []
     private let primaryDisplayID: CGDirectDisplayID?
     private let onDismiss: () -> Void
@@ -27,7 +25,7 @@ final class OverviewWindowController {
         onHoverChanged: @escaping (CGWindowID?) -> Void,
         onMouseMoving: @escaping (Bool) -> Void,
         onInteractionChanged: @escaping (Bool) -> Void,
-        onWindowSelected: @escaping (WindowDescriptor) -> Void,
+        onWindowSelected: @escaping (WindowDescriptor, Bool) -> Void,
         onShelfItemSelected: @escaping (AppShelfItem) -> Void,
         onDesktopRequested: @escaping () -> Void,
         onNewWindowSelected: @escaping (CGWindowID, pid_t) -> Void
@@ -68,14 +66,14 @@ final class OverviewWindowController {
         }
     }
 
-    func show() {
+    func show(duration: CFTimeInterval) {
         NSApp.activate(ignoringOtherApps: true)
 
         for panelController in panelControllers {
             panelController.show(makeKey: panelController.display.id == primaryDisplayID)
         }
 
-        expand()
+        expand(duration: duration)
         promotePanelUnderCursor()
     }
 
@@ -142,9 +140,21 @@ final class OverviewWindowController {
         primary.addNewWindowIcons(icons)
     }
 
-    private func expand() {
+    private func expand(duration: CFTimeInterval) {
         for panelController in panelControllers {
-            panelController.expand(duration: 0.22)
+            panelController.expand(duration: duration)
+        }
+    }
+
+    func animateDismiss(selectedWindowID: CGWindowID?, duration: CFTimeInterval) {
+        for panelController in panelControllers {
+            panelController.animateDismiss(selectedWindowID: selectedWindowID, duration: duration)
+        }
+    }
+
+    func setPreviewUpdatesSuspended(_ suspended: Bool) {
+        for panelController in panelControllers {
+            panelController.setPreviewUpdatesSuspended(suspended)
         }
     }
 
@@ -194,7 +204,7 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         onHoverChanged: @escaping (CGWindowID?) -> Void,
         onMouseActivity: @escaping () -> Void,
         onBackgroundClick: @escaping () -> Void,
-        onWindowSelected: @escaping (WindowDescriptor) -> Void,
+        onWindowSelected: @escaping (WindowDescriptor, Bool) -> Void,
         onShelfItemSelected: @escaping (AppShelfItem) -> Void,
         onDesktopRequested: @escaping () -> Void,
         onNewWindowSelected: @escaping (CGWindowID, pid_t) -> Void,
@@ -302,6 +312,25 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         panel.ignoresMouseEvents = true
         panel.alphaValue = 0
         panel.orderOut(nil)
+    }
+
+    func animateDismiss(selectedWindowID: CGWindowID?, duration: CFTimeInterval) {
+        guard let panel = window as? OverviewPanel else {
+            return
+        }
+
+        overlayView.animateDismiss(selectedWindowID: selectedWindowID, duration: duration)
+        panel.ignoresMouseEvents = true
+        panel.acceptsMouseMovedEvents = false
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.95, 0.05, 0.795, 0.035)
+            panel.animator().alphaValue = 0
+        }
+    }
+
+    func setPreviewUpdatesSuspended(_ suspended: Bool) {
+        overlayView.setPreviewUpdatesSuspended(suspended)
     }
 
     override func close() {

@@ -20,10 +20,10 @@ enum GlobalTriggerMonitorError: LocalizedError {
 }
 
 final class GlobalTriggerMonitor {
-    var onToggle: (() -> Void)?
+    var onToggle: ((Bool) -> Void)?
 
     // CGEvent button numbers are zero-based: left=0, right=1, middle=2, mouse button 4=3.
-    private let toggleButtonNumber: Int64 = 3
+    var toggleButtonNumber: Int64 = 3
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var suspendedUntil = Date.distantPast
@@ -99,8 +99,9 @@ final class GlobalTriggerMonitor {
         }
 
         if type == .otherMouseDown {
+            let slowAnimation = event.flags.contains(.maskShift)
             DispatchQueue.main.async { [weak self] in
-                self?.onToggle?()
+                self?.onToggle?(slowAnimation)
             }
         }
 

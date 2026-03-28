@@ -8,12 +8,28 @@
 import AppKit
 import Combine
 import QuartzCore
+import ScreenCaptureKit
+
+private struct WallpaperCacheKey: Hashable {
+    let displayID: CGDirectDisplayID
+    let wallpaperURL: URL
+    let frame: CGRect
+    let appearanceName: String
+}
+
+private struct ResolvedWallpaper {
+    let url: URL
+    let cacheKey: WallpaperCacheKey
+    let wallpaperWindowID: CGWindowID?
+    let captureSize: CGSize
+    let scale: CGFloat
+}
 
 @MainActor
 final class OverviewDisplayView: NSView {
     var onHoverChanged: ((CGWindowID?) -> Void)?
     var onBackgroundClick: (() -> Void)?
-    var onWindowSelected: ((WindowDescriptor) -> Void)?
+    var onWindowSelected: ((WindowDescriptor, Bool) -> Void)?
     var onShelfItemSelected: ((AppShelfItem) -> Void)?
     var onDesktopRequested: (() -> Void)?
     var onNewWindowSelected: ((CGWindowID, pid_t) -> Void)?
@@ -32,6 +48,7 @@ final class OverviewDisplayView: NSView {
     private var cardLayers: [CGWindowID: WindowCardLayer] = [:]
     private var titleLayers: [CGWindowID: WindowTitleLayer] = [:]
     private var previewObservers: [CGWindowID: AnyCancellable] = [:]
+    private var pendingPreviewUpdateWindowIDs: Set<CGWindowID> = []
     private var shelfButtons: [ShelfItemButton] = []
     private var newWindowButtons: [NewWindowButton] = []
     private var desktopButton: DesktopButton?
@@ -40,6 +57,7 @@ final class OverviewDisplayView: NSView {
     private var isExpanded = false
     private var mouseIdleTimer: Timer?
     private var goneWindowIDs: Set<CGWindowID> = []
+    private var previewUpdatesSuspended = false
     /// Window hit on mouseDown; selection runs on mouseUp only when no drag occurred.
     private var pendingWindowSelect: WindowDescriptor?
     private var pendingWindowSelectOrigin: CGPoint?
@@ -81,7 +99,8 @@ final class OverviewDisplayView: NSView {
         wallpaperLayer.zPosition = -2
         wallpaperLayer.opacity = 0
         // Try cache first (instant on 2nd+ open), else load async.
-        if let cached = Self.wallpaperCache[display.id] {
+        if let wallpaper = Self.resolveWallpaper(for: display.id),
+           let cached = Self.wallpaperCache[wallpaper.cacheKey] {
             wallpaperLayer.contents = cached
         } else {
             loadWallpaperAsync()
@@ -261,7 +280,7 @@ final class OverviewDisplayView: NSView {
             return
         }
 
-        onWindowSelected?(descriptor)
+        onWindowSelected?(descriptor, event.modifierFlags.contains(.shift))
     }
 
     private func bringDraggedWindowToFront(_ descriptor: WindowDescriptor) {
@@ -288,6 +307,28 @@ final class OverviewDisplayView: NSView {
         }
         dragSavedCardZ = nil
         dragSavedTitleZ = nil
+    }
+
+    private func bringWindowToFrontForDismissal(_ windowID: CGWindowID) {
+        restoreWindowZOrderForDismissal()
+
+        guard let card = cardLayers[windowID], let title = titleLayers[windowID] else {
+            return
+        }
+
+        card.zPosition = 200_000
+        title.zPosition = 200_001
+    }
+
+    private func restoreWindowZOrderForDismissal() {
+        for descriptor in windowDescriptors {
+            guard let card = cardLayers[descriptor.id], let title = titleLayers[descriptor.id] else {
+                continue
+            }
+
+            card.zPosition = CGFloat(10_000 - descriptor.zIndex)
+            title.zPosition = CGFloat(20_000 - descriptor.zIndex)
+        }
     }
 
     private func clampWindowFramesWithinBounds(_ descriptor: WindowDescriptor) {
@@ -343,29 +384,49 @@ final class OverviewDisplayView: NSView {
 
         isExpanded = true
 
-        let dimAnimation = CABasicAnimation(keyPath: "opacity")
-        dimAnimation.fromValue = Float(0)
-        dimAnimation.toValue = Float(1)
-        dimAnimation.duration = min(duration, 0.12)
-        dimAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        let titleDuration = max(duration * 1.15, 0)
+
         backgroundDimLayer.opacity = 1
-        backgroundDimLayer.add(dimAnimation, forKey: "dimOpacity")
 
         // Cap at 0.99 so macOS doesn't consider underlying windows fully occluded —
         // otherwise the compositor stops updating them and ScreenCaptureKit returns stale frames.
-        let wallpaperAnimation = CABasicAnimation(keyPath: "opacity")
-        wallpaperAnimation.fromValue = Float(0)
-        wallpaperAnimation.toValue = Float(0.99)
-        wallpaperAnimation.duration = min(duration, 0.12)
-        wallpaperAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
         wallpaperLayer.opacity = 0.99
-        wallpaperLayer.add(wallpaperAnimation, forKey: "wallpaperOpacity")
 
         for titleLayer in titleLayers.values {
-            titleLayer.setVisible(true)
+            titleLayer.animateToVisible(duration: titleDuration)
         }
         for cardLayer in cardLayers.values {
             cardLayer.animateToExpanded(duration: duration)
+        }
+    }
+
+    func animateDismiss(selectedWindowID: CGWindowID?, duration: CFTimeInterval) {
+        guard isExpanded else {
+            return
+        }
+
+        isExpanded = false
+        mouseIdleTimer?.invalidate()
+        mouseIdleTimer = nil
+        if let selectedWindowID {
+            bringWindowToFrontForDismissal(selectedWindowID)
+        }
+        disableInteractions()
+
+        for button in shelfButtons {
+            button.isHidden = true
+        }
+        for button in newWindowButtons {
+            button.isHidden = true
+        }
+        desktopButton?.isHidden = true
+
+        for titleLayer in titleLayers.values {
+            titleLayer.setVisible(false)
+        }
+
+        for cardLayer in cardLayers.values {
+            cardLayer.animateToCollapsed(duration: duration)
         }
     }
 
@@ -411,7 +472,7 @@ final class OverviewDisplayView: NSView {
             CATransaction.commit()
         }
 
-        if opaque {
+        if opaque, isExpanded {
             mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
                 self?.setWallpaperOpaque(false)
             }
@@ -457,7 +518,32 @@ final class OverviewDisplayView: NSView {
 
     // MARK: - Wallpaper
 
-    private static var wallpaperCache: [CGDirectDisplayID: CGImage] = [:]
+    private static var wallpaperCache: [WallpaperCacheKey: CGImage] = [:]
+
+    private static let desktopWallpaperLayer = -2147483624
+
+    private static func resolveWallpaper(for displayID: CGDirectDisplayID) -> ResolvedWallpaper? {
+        guard let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(displayID)
+        }),
+        let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
+            return nil
+        }
+
+        let cacheKey = WallpaperCacheKey(
+            displayID: displayID,
+            wallpaperURL: url,
+            frame: screen.frame.integral,
+            appearanceName: currentAppearanceCacheComponent()
+        )
+        return ResolvedWallpaper(
+            url: url,
+            cacheKey: cacheKey,
+            wallpaperWindowID: currentWallpaperWindowID(for: screen),
+            captureSize: screen.frame.size,
+            scale: max(screen.backingScaleFactor, 1)
+        )
+    }
 
     /// Loads the wallpaper on a background thread and sets it when ready.
     /// Result is cached so subsequent opens are instant.
@@ -465,23 +551,109 @@ final class OverviewDisplayView: NSView {
         let displayID = display.id
 
         // Resolve the URL on the main thread (fast, needs NSScreen).
-        let screen = NSScreen.screens.first {
-            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(displayID)
+        guard let wallpaper = Self.resolveWallpaper(for: displayID) else { return }
+        if let cached = Self.wallpaperCache[wallpaper.cacheKey] {
+            wallpaperLayer.contents = cached
+            return
         }
-        guard let url = screen.flatMap({ NSWorkspace.shared.desktopImageURL(for: $0) }) else { return }
 
         // Decode on a background thread to avoid blocking the open.
         Task { [weak self] in
-            let cgImage: CGImage? = await withCheckedContinuation { cont in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let nsImage = NSImage(contentsOf: url)
-                    let cg = nsImage?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-                    cont.resume(returning: cg)
-                }
+            let cgImage = await Self.captureRenderedWallpaper(for: wallpaper)
+            let resolvedImage: CGImage?
+            if let cgImage {
+                resolvedImage = cgImage
+            } else {
+                resolvedImage = await Self.decodeWallpaperImage(from: wallpaper.url)
             }
-            guard let self, let cgImage else { return }
-            Self.wallpaperCache[displayID] = cgImage
-            self.wallpaperLayer.contents = cgImage
+            guard let self, let resolvedImage else { return }
+            guard let currentWallpaper = Self.resolveWallpaper(for: displayID),
+                  currentWallpaper.cacheKey == wallpaper.cacheKey else {
+                return
+            }
+            Self.wallpaperCache[wallpaper.cacheKey] = resolvedImage
+            self.wallpaperLayer.contents = resolvedImage
+        }
+    }
+
+    private static func currentAppearanceCacheComponent() -> String {
+        if let appearance = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+            return appearance.rawValue
+        }
+
+        return UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+            ? NSAppearance.Name.darkAqua.rawValue
+            : NSAppearance.Name.aqua.rawValue
+    }
+
+    private static func currentWallpaperWindowID(for screen: NSScreen) -> CGWindowID? {
+        guard let rawWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        let targetFrame = screen.frame.integral
+        var bestMatch: (windowID: CGWindowID, overlapArea: CGFloat)?
+
+        for info in rawWindows {
+            guard let ownerName = info[kCGWindowOwnerName as String] as? String,
+                  ownerName == "Dock",
+                  let layerNumber = info[kCGWindowLayer as String] as? NSNumber,
+                  layerNumber.intValue == desktopWallpaperLayer,
+                  let windowNumber = info[kCGWindowNumber as String] as? NSNumber,
+                  let boundsDictionary = info[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary) else {
+                continue
+            }
+
+            let overlap = targetFrame.intersection(bounds)
+            let overlapArea = overlap.isNull ? 0 : overlap.width * overlap.height
+            guard overlapArea > 0 else { continue }
+
+            if let bestMatch, bestMatch.overlapArea >= overlapArea {
+                continue
+            }
+
+            bestMatch = (CGWindowID(windowNumber.uint32Value), overlapArea)
+        }
+
+        return bestMatch?.windowID
+    }
+
+    private nonisolated static func captureRenderedWallpaper(for wallpaper: ResolvedWallpaper) async -> CGImage? {
+        guard let wallpaperWindowID = wallpaper.wallpaperWindowID,
+              let shareableContent = await shareableContentIncludingDesktopWindows(),
+              let shareableWindow = shareableContent.windows.first(where: { $0.windowID == wallpaperWindowID }) else {
+            return nil
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: shareableWindow)
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, size_t(wallpaper.captureSize.width * wallpaper.scale))
+        configuration.height = max(1, size_t(wallpaper.captureSize.height * wallpaper.scale))
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.scalesToFit = true
+        configuration.preservesAspectRatio = true
+        configuration.showsCursor = false
+        configuration.capturesAudio = false
+        configuration.ignoreShadowsSingleWindow = true
+        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    }
+
+    private nonisolated static func shareableContentIncludingDesktopWindows() async -> SCShareableContent? {
+        await withCheckedContinuation { cont in
+            SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
+                cont.resume(returning: content)
+            }
+        }
+    }
+
+    private nonisolated static func decodeWallpaperImage(from url: URL) async -> CGImage? {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let nsImage = NSImage(contentsOf: url)
+                let cgImage = nsImage?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                cont.resume(returning: cgImage)
+            }
         }
     }
 
@@ -509,8 +681,33 @@ final class OverviewDisplayView: NSView {
                 .dropFirst()
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
-                    self?.cardLayers[descriptor.id]?.setPreviewImage(descriptor.previewImage)
+                    guard let self else { return }
+                    if self.previewUpdatesSuspended {
+                        self.pendingPreviewUpdateWindowIDs.insert(descriptor.id)
+                        return
+                    }
+                    self.cardLayers[descriptor.id]?.setPreviewImage(descriptor.previewImage)
                 }
+        }
+    }
+
+    func setPreviewUpdatesSuspended(_ suspended: Bool) {
+        guard previewUpdatesSuspended != suspended else {
+            return
+        }
+
+        previewUpdatesSuspended = suspended
+        guard !suspended else {
+            return
+        }
+
+        let pendingWindowIDs = pendingPreviewUpdateWindowIDs
+        pendingPreviewUpdateWindowIDs.removeAll()
+        for windowID in pendingWindowIDs {
+            guard let descriptor = windowDescriptors.first(where: { $0.id == windowID }) else {
+                continue
+            }
+            cardLayers[windowID]?.setPreviewImage(descriptor.previewImage)
         }
     }
 
@@ -736,6 +933,39 @@ private final class WindowCardLayer: CALayer {
         add(transformAnimation, forKey: "transform")
     }
 
+    func animateToCollapsed(duration: CFTimeInterval) {
+        let targetPosition = CGPoint(x: sourceRect.midX, y: sourceRect.midY)
+        let currentPosition = presentation()?.position ?? position
+        let currentTransform = presentation()?.transform ?? transform
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        position = targetPosition
+        transform = collapsedTransform
+        CATransaction.commit()
+
+        if duration <= 0 {
+            return
+        }
+
+        let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+
+        let positionAnimation = CABasicAnimation(keyPath: "position")
+        positionAnimation.fromValue = currentPosition
+        positionAnimation.toValue = targetPosition
+        positionAnimation.duration = duration
+        positionAnimation.timingFunction = timing
+
+        let transformAnimation = CABasicAnimation(keyPath: "transform")
+        transformAnimation.fromValue = currentTransform
+        transformAnimation.toValue = collapsedTransform
+        transformAnimation.duration = duration
+        transformAnimation.timingFunction = timing
+
+        add(positionAnimation, forKey: "position")
+        add(transformAnimation, forKey: "transform")
+    }
+
     private var collapsedTransform: CATransform3D {
         CATransform3DMakeScale(
             max(sourceRect.width / max(targetRect.width, 1), 0.01),
@@ -832,7 +1062,31 @@ private final class WindowTitleLayer: CALayer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         isHidden = !visible
+        opacity = visible ? 1 : 0
         CATransaction.commit()
+    }
+
+    func animateToVisible(duration: CFTimeInterval) {
+        let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        isHidden = false
+        opacity = 0
+        CATransaction.commit()
+
+        guard duration > 0 else {
+            opacity = 1
+            return
+        }
+
+        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
+        opacityAnimation.fromValue = Float(0)
+        opacityAnimation.toValue = Float(1)
+        opacityAnimation.duration = duration
+        opacityAnimation.timingFunction = timing
+        opacity = 1
+        add(opacityAnimation, forKey: "opacityIn")
     }
 
     private func updateGeometry() {

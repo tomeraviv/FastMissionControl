@@ -9,7 +9,8 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let appModel = AppModel()
+    let settings = AppSettings()
+    lazy var appModel = AppModel(settings: settings)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appModel.start()

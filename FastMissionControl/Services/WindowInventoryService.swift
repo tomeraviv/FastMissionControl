@@ -40,7 +40,16 @@ private struct DisplayGeometry {
     let appKitFrame: CGRect
 }
 
+@MainActor
 final class WindowInventoryService {
+    private let appCache: RunningApplicationCache
+    private let settings: AppSettings
+
+    init(appCache: RunningApplicationCache, settings: AppSettings) {
+        self.appCache = appCache
+        self.settings = settings
+    }
+
     // MARK: - Synchronous snapshot (instant, no SCShareableContent)
 
     func snapshotSync() throws -> OverviewSnapshot {
@@ -50,8 +59,7 @@ final class WindowInventoryService {
         }
 
         let cgRecords = loadWindowRecords()
-        let runningApps = NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }
-        let appMap = Dictionary(uniqueKeysWithValues: runningApps.map { ($0.processIdentifier, $0) })
+        let runningApps = appCache.allRecords()
 
         var visibleWindows: [WindowDescriptor] = []
         var visiblePIDs = Set<pid_t>()
@@ -63,7 +71,7 @@ final class WindowInventoryService {
             guard record.bounds.width >= 60, record.bounds.height >= 40 else { continue }
             guard let bestDisplay = bestDisplay(for: record.bounds, displays: displayGeometry.displays) else { continue }
 
-            let runningApp = appMap[record.pid]
+            let runningApp = appCache.record(for: record.pid)
             // Skip our own app and system UI processes without windows.
             guard let appName = record.ownerName ?? runningApp?.localizedName else { continue }
 
@@ -100,14 +108,15 @@ final class WindowInventoryService {
         }
 
         // Quick shelf: only check isHidden (sync, free — skip AX for speed).
-        let shelfItems = runningApps.compactMap { app -> AppShelfItem? in
-            guard !visiblePIDs.contains(app.processIdentifier) else { return nil }
+        let shelfItems = runningApps.compactMap { record -> AppShelfItem? in
+            let app = record.app
+            guard !visiblePIDs.contains(record.pid) else { return nil }
             guard app.isHidden else { return nil }
             return AppShelfItem(
-                pid: app.processIdentifier,
-                bundleIdentifier: app.bundleIdentifier,
-                appName: app.localizedName ?? app.bundleIdentifier ?? "Application",
-                icon: app.icon ?? NSWorkspace.shared.icon(for: .application),
+                pid: record.pid,
+                bundleIdentifier: record.bundleIdentifier,
+                appName: record.localizedName ?? record.bundleIdentifier ?? "Application",
+                icon: record.icon,
                 reason: .hidden,
                 restorableWindows: []
             )
@@ -119,7 +128,10 @@ final class WindowInventoryService {
 
         let cursorDisplayID = displayIDContainingCursor(from: displayGeometry.displays)
         let displayCount = displayGeometry.displays.count
-        let livePreviewLimit = max(6, 14 - max(0, displayCount - 1) * 2)
+        let livePreviewLimit = max(
+            settings.livePreviewMinimumLimit,
+            settings.livePreviewBaseLimit - max(0, displayCount - 1) * settings.livePreviewPerExtraDisplayPenalty
+        )
 
         return OverviewSnapshot(
             windowFrame: displayGeometry.appKitUnionFrame,
@@ -200,10 +212,7 @@ final class WindowInventoryService {
 
         let shareableContent = try await SCShareableContent.current
         let cgRecords = loadWindowRecords()
-        let runningApps = NSWorkspace.shared.runningApplications
-            .filter { !$0.isTerminated }
-
-        let appMap = Dictionary(uniqueKeysWithValues: runningApps.map { ($0.processIdentifier, $0) })
+        let runningApps = appCache.allRecords()
 
         let visibleWindows = shareableContent.windows.compactMap { window -> WindowDescriptor? in
             guard window.windowID != 0 else {
@@ -230,7 +239,7 @@ final class WindowInventoryService {
                 return nil
             }
 
-            let runningApp = appMap[owner.processID]
+            let runningApp = appCache.record(for: owner.processID)
             let icon = runningApp?.icon ?? NSWorkspace.shared.icon(for: .application)
             let appKitBounds = appKitFrame(
                 forQuartzFrame: cgRecord.bounds,
@@ -267,11 +276,12 @@ final class WindowInventoryService {
         }
 
         let visiblePIDs = Set(visibleWindows.map { $0.pid })
-        let shelfCandidateApps = runningApps.filter { !visiblePIDs.contains($0.processIdentifier) }
+        let shelfCandidateApps = runningApps.map(\.app).filter { !visiblePIDs.contains($0.processIdentifier) }
         let axWindowsByPID = loadAXWindows(for: shelfCandidateApps)
-        let shelfItems = runningApps.compactMap { app -> AppShelfItem? in
-            let axWindows = axWindowsByPID[app.processIdentifier] ?? []
-            let hasVisibleWindow = visiblePIDs.contains(app.processIdentifier)
+        let shelfItems = runningApps.compactMap { record -> AppShelfItem? in
+            let app = record.app
+            let axWindows = axWindowsByPID[record.pid] ?? []
+            let hasVisibleWindow = visiblePIDs.contains(record.pid)
             let hasMinimizedWindow = axWindows.contains(where: \.isMinimized)
 
             guard !hasVisibleWindow, app.isHidden || hasMinimizedWindow else {
@@ -291,10 +301,10 @@ final class WindowInventoryService {
             }
 
             return AppShelfItem(
-                pid: app.processIdentifier,
-                bundleIdentifier: app.bundleIdentifier,
-                appName: app.localizedName ?? app.bundleIdentifier ?? "Application",
-                icon: app.icon ?? NSWorkspace.shared.icon(for: .application),
+                pid: record.pid,
+                bundleIdentifier: record.bundleIdentifier,
+                appName: record.localizedName ?? record.bundleIdentifier ?? "Application",
+                icon: record.icon,
                 reason: reason,
                 restorableWindows: axWindows
             )
@@ -306,7 +316,10 @@ final class WindowInventoryService {
 
         let cursorDisplayID = displayIDContainingCursor(from: displayGeometry.displays)
         let displayCount = displayGeometry.displays.count
-        let livePreviewLimit = max(6, 14 - max(0, displayCount - 1) * 2)
+        let livePreviewLimit = max(
+            settings.livePreviewMinimumLimit,
+            settings.livePreviewBaseLimit - max(0, displayCount - 1) * settings.livePreviewPerExtraDisplayPenalty
+        )
 
         return OverviewSnapshot(
             windowFrame: displayGeometry.appKitUnionFrame,

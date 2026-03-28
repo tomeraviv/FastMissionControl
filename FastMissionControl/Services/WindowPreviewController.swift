@@ -14,18 +14,29 @@ import ScreenCaptureKit
 
 @MainActor
 final class WindowPreviewController {
+    private let settings: AppSettings
     private var snapshot: OverviewSnapshot?
     private var hoveredWindowID: CGWindowID?
     private var liveRefreshTask: Task<Void, Never>?
     private var stillTasks: [CGWindowID: Task<Void, Never>] = [:]
     private var livePreviewsEnabled = false
     private var userInteractingWithOverlay = false
+    private var previewUpdatesSuspended = false
     private var previewCache: [CGWindowID: CGImage] = [:]
     private var generation: UInt64 = 0
-    private let livePreviewBatchIntervalNanoseconds: UInt64 = 5_000_000
+    private var livePreviewIntervalNanoseconds: UInt64
+
+    init(settings: AppSettings) {
+        self.settings = settings
+        livePreviewIntervalNanoseconds = settings.defaultLivePreviewIntervalNanoseconds
+    }
 
     func setUserInteractingWithOverlay(_ interacting: Bool) {
         userInteractingWithOverlay = interacting
+    }
+
+    func setPreviewUpdatesSuspended(_ suspended: Bool) {
+        previewUpdatesSuspended = suspended
     }
 
     func prepare(snapshot: OverviewSnapshot, startStillLoading: Bool) {
@@ -35,6 +46,8 @@ final class WindowPreviewController {
         hoveredWindowID = nil
         livePreviewsEnabled = false
         userInteractingWithOverlay = false
+        previewUpdatesSuspended = false
+        livePreviewIntervalNanoseconds = defaultLivePreviewIntervalNanoseconds()
 
         applyCachedPreviews(to: snapshot)
 
@@ -87,6 +100,7 @@ final class WindowPreviewController {
         hoveredWindowID = nil
         livePreviewsEnabled = false
         userInteractingWithOverlay = false
+        livePreviewIntervalNanoseconds = defaultLivePreviewIntervalNanoseconds()
     }
 
     func startStillPreviewLoading() {
@@ -131,20 +145,32 @@ final class WindowPreviewController {
             let desiredWindows = livePreviewDescriptors(from: snapshot)
 
             guard !desiredWindows.isEmpty else {
-                do {
-                    try await Task.sleep(nanoseconds: livePreviewBatchIntervalNanoseconds)
-                } catch { break }
+                if await sleepForCurrentInterval(idlePreviewIntervalNanoseconds) == false {
+                    break
+                }
                 continue
             }
 
             if userInteractingWithOverlay {
-                do {
-                    try await Task.sleep(nanoseconds: livePreviewBatchIntervalNanoseconds)
-                } catch { break }
+                if await sleepForCurrentInterval(suspendedPreviewIntervalNanoseconds) == false {
+                    break
+                }
                 continue
             }
 
-            let results = await Self.captureBatch(desiredWindows)
+            if previewUpdatesSuspended {
+                if await sleepForCurrentInterval(suspendedPreviewIntervalNanoseconds) == false {
+                    break
+                }
+                continue
+            }
+
+            let captureStart = DispatchTime.now().uptimeNanoseconds
+            let results = await Self.captureBatch(
+                desiredWindows,
+                maxConcurrentCaptures: settings.livePreviewCaptureConcurrencyLimit
+            )
+            let captureDurationNanoseconds = DispatchTime.now().uptimeNanoseconds - captureStart
 
             guard !Task.isCancelled,
                   generation == self.generation,
@@ -161,9 +187,18 @@ final class WindowPreviewController {
                 previewCache[descriptor.id] = image
             }
 
-            do {
-                try await Task.sleep(nanoseconds: livePreviewBatchIntervalNanoseconds)
-            } catch { break }
+            adaptLivePreviewInterval(
+                afterCaptureDurationNanoseconds: captureDurationNanoseconds,
+                windowCount: desiredWindows.count,
+                hoveredWindowID: hoveredWindowID
+            )
+
+            let sleepNanoseconds = livePreviewIntervalNanoseconds > captureDurationNanoseconds
+                ? livePreviewIntervalNanoseconds - captureDurationNanoseconds
+                : 0
+            if await sleepForCurrentInterval(sleepNanoseconds) == false {
+                break
+            }
         }
 
         liveRefreshTask = nil
@@ -265,6 +300,63 @@ final class WindowPreviewController {
 
     // MARK: - Capture helpers
 
+    private func defaultLivePreviewIntervalNanoseconds() -> UInt64 {
+        settings.defaultLivePreviewIntervalNanoseconds
+    }
+
+    private func baselineIntervalNanoseconds(windowCount: Int, hoveredWindowID: CGWindowID?) -> UInt64 {
+        if hoveredWindowID != nil {
+            return livePreviewMinIntervalNanoseconds
+        }
+
+        switch windowCount {
+        case ...2:
+            return livePreviewMinIntervalNanoseconds
+        case 3...4:
+            return 50_000_000
+        case 5...8:
+            return 66_000_000
+        default:
+            return 83_000_000
+        }
+    }
+
+    private func adaptLivePreviewInterval(
+        afterCaptureDurationNanoseconds duration: UInt64,
+        windowCount: Int,
+        hoveredWindowID: CGWindowID?
+    ) {
+        let baseline = baselineIntervalNanoseconds(windowCount: windowCount, hoveredWindowID: hoveredWindowID)
+        let pressured = min(
+            livePreviewMaxIntervalNanoseconds,
+            max(baseline, duration + duration / 4)
+        )
+
+        if pressured >= livePreviewIntervalNanoseconds {
+            livePreviewIntervalNanoseconds = pressured
+            return
+        }
+
+        livePreviewIntervalNanoseconds = max(
+            baseline,
+            (livePreviewIntervalNanoseconds * 3 + pressured) / 4
+        )
+    }
+
+    private func sleepForCurrentInterval(_ nanoseconds: UInt64) async -> Bool {
+        guard nanoseconds > 0 else {
+            await Task.yield()
+            return !Task.isCancelled
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: nanoseconds)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func loadStillPreview(for descriptor: WindowDescriptor, generation: UInt64) async {
         guard !Task.isCancelled else {
             return
@@ -281,6 +373,7 @@ final class WindowPreviewController {
 
         guard !Task.isCancelled,
               generation == self.generation,
+              !previewUpdatesSuspended,
               snapshot?.windows.contains(where: { $0.id == descriptor.id }) == true else {
             stillTasks.removeValue(forKey: descriptor.id)
             return
@@ -291,24 +384,57 @@ final class WindowPreviewController {
         stillTasks.removeValue(forKey: descriptor.id)
     }
 
-    /// Captures a batch of windows concurrently. Must be `nonisolated` so `withTaskGroup` child tasks are not MainActor-isolated.
-    private nonisolated static func captureBatch(_ descriptors: [WindowDescriptor]) async -> [(WindowDescriptor, CGImage)] {
-        await withTaskGroup(of: (WindowDescriptor, CGImage?).self) { group in
-            for descriptor in descriptors {
-                let sw = descriptor.shareableWindow
-                let tf = descriptor.targetFrame
-                group.addTask {
-                    let image = await captureOffMainActor(shareableWindow: sw, targetFrame: tf, longestEdge: 720)
-                    return (descriptor, image)
-                }
+    /// Captures a batch of windows concurrently after reading the per-window
+    /// capture inputs on the main actor.
+    private static func captureBatch(
+        _ descriptors: [WindowDescriptor],
+        maxConcurrentCaptures: Int
+    ) async -> [(WindowDescriptor, CGImage)] {
+        let concurrencyLimit = max(1, maxConcurrentCaptures)
+
+        return await withTaskGroup(of: (WindowDescriptor, CGImage?).self) { group in
+            var iterator = descriptors.makeIterator()
+            var inFlight = 0
+
+            while inFlight < concurrencyLimit, let descriptor = iterator.next() {
+                addCaptureTask(for: descriptor, to: &group)
+                inFlight += 1
             }
+
             var results: [(WindowDescriptor, CGImage)] = []
-            for await (descriptor, image) in group {
+            while inFlight > 0 {
+                guard let (descriptor, image) = await group.next() else {
+                    break
+                }
+                inFlight -= 1
+
                 if let image {
                     results.append((descriptor, image))
                 }
+
+                if let nextDescriptor = iterator.next() {
+                    addCaptureTask(for: nextDescriptor, to: &group)
+                    inFlight += 1
+                }
             }
+
             return results
+        }
+    }
+
+    private static func addCaptureTask(
+        for descriptor: WindowDescriptor,
+        to group: inout TaskGroup<(WindowDescriptor, CGImage?)>
+    ) {
+        let shareableWindow = descriptor.shareableWindow
+        let targetFrame = descriptor.targetFrame
+        group.addTask {
+            let image = await captureOffMainActor(
+                shareableWindow: shareableWindow,
+                targetFrame: targetFrame,
+                longestEdge: 720
+            )
+            return (descriptor, image)
         }
     }
 
@@ -333,5 +459,21 @@ final class WindowPreviewController {
         configuration.capturesAudio = false
         configuration.ignoreShadowsSingleWindow = true
         return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    }
+
+    private var livePreviewMinIntervalNanoseconds: UInt64 {
+        settings.livePreviewMinIntervalNanoseconds
+    }
+
+    private var livePreviewMaxIntervalNanoseconds: UInt64 {
+        settings.livePreviewMaxIntervalNanoseconds
+    }
+
+    private var suspendedPreviewIntervalNanoseconds: UInt64 {
+        settings.suspendedPreviewIntervalNanoseconds
+    }
+
+    private var idlePreviewIntervalNanoseconds: UInt64 {
+        settings.idlePreviewIntervalNanoseconds
     }
 }
