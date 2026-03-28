@@ -36,7 +36,7 @@ final class AppModel: ObservableObject {
 
     private let prewarmIntervalNanoseconds: UInt64 = 3_000_000_000
     private let liveRefreshInterval: TimeInterval = 1.5
-    private let livePreviewStartupDelayNanoseconds: UInt64 = 2_000_000_000
+    private let livePreviewStartupDelayNanoseconds: UInt64 = 100_000_000
 
     func start() {
         Publishers.CombineLatest(
@@ -151,10 +151,14 @@ final class AppModel: ObservableObject {
     }
 
     private func schedulePostShowWork(snapshot: OverviewSnapshot) {
+        // Pre-resolve AX handles so clicks raise the right window instantly.
+        activationService.preResolveAXHandles(for: snapshot)
+
         // Fire-and-forget: resolve SCWindow objects in background
         // (needed for preview captures, not needed for display).
         Task { [weak self] in
             await self?.inventoryService.resolveShareableWindows(for: snapshot)
+            await self?.previewController.shareableWindowsDidResolve()
         }
 
         startStillPreviewLoadingTask?.cancel()
@@ -276,7 +280,6 @@ final class AppModel: ObservableObject {
     private func makeOverviewController(snapshot: OverviewSnapshot) -> OverviewWindowController {
         OverviewWindowController(
             snapshot: snapshot,
-            performance: previewController.performance,
             onDismiss: { [weak self] in
                 guard let self else { return }
                 self.startLivePreviewsTask?.cancel()
@@ -290,31 +293,44 @@ final class AppModel: ObservableObject {
             },
             onHoverChanged: { [weak self] windowID in
                 self?.previewController.setHoveredWindow(windowID)
+                if let windowID, let descriptor = snapshot.windows.first(where: { $0.id == windowID }) {
+                    self?.activationService.preRaise(descriptor: descriptor)
+                } else {
+                    self?.activationService.clearPreRaise()
+                }
+            },
+            onMouseMoving: { [weak self] moving in
+                self?.previewController.setUserInteractingWithOverlay(moving)
+            },
+            onInteractionChanged: { [weak self] interacting in
+                self?.previewController.setUserInteractingWithOverlay(interacting)
             },
             onWindowSelected: { [weak self] descriptor in
                 guard let self else { return }
-                self.triggerMonitor.suspend(for: 0.30)
-                // Fast path: bring the app to front immediately (no AX).
                 self.activationService.activateAppFast(pid: descriptor.pid)
+                self.overviewController?.hideImmediately()
+                if self.activationService.currentPreRaisedPid != descriptor.pid {
+                    self.activationService.raiseSpecificWindow(descriptor: descriptor)
+                }
                 self.dismissOverviewImmediately()
-                // Slow path: resolve & raise the specific window via AX
-                // after the overlay is already gone.
-                Task { self.activationService.raiseSpecificWindow(descriptor: descriptor) }
             },
             onShelfItemSelected: { [weak self] item in
                 guard let self else { return }
-                self.triggerMonitor.suspend(for: 0.30)
                 self.activationService.activateAppFast(pid: item.pid)
+                self.overviewController?.hideImmediately()
+                self.activationService.raiseSpecificWindow(shelfItem: item)
                 self.dismissOverviewImmediately()
-                Task { self.activationService.raiseSpecificWindow(shelfItem: item) }
             },
             onDesktopRequested: { [weak self] in
                 self?.showDesktop()
             },
             onNewWindowSelected: { [weak self] windowID, pid in
                 guard let self else { return }
-                self.triggerMonitor.suspend(for: 0.30)
                 self.activationService.activateAppFast(pid: pid)
+                self.overviewController?.hideImmediately()
+                if self.activationService.currentPreRaisedPid != pid {
+                    self.activationService.raiseSpecificWindow(windowID: windowID, pid: pid)
+                }
                 self.dismissOverviewImmediately()
             }
         )
@@ -396,7 +412,13 @@ final class AppModel: ObservableObject {
         currentSnapshot = nil
         overviewController = nil
         isOverviewVisible = false
-        controller.close()
+
+        // Defer the heavy panel/layer teardown so the main thread unblocks
+        // and the WindowServer can composite the target window sooner.
+        Task { @MainActor in
+            controller.close()
+        }
+
         updatePrewarmLoop()
     }
 

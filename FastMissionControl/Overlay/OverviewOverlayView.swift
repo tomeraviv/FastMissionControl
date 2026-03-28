@@ -17,12 +17,13 @@ final class OverviewDisplayView: NSView {
     var onShelfItemSelected: ((AppShelfItem) -> Void)?
     var onDesktopRequested: (() -> Void)?
     var onNewWindowSelected: ((CGWindowID, pid_t) -> Void)?
+    /// True while the user is dragging a window card (live previews pause to keep input smooth).
+    var onInteractionChanged: ((Bool) -> Void)?
+    var onMouseActivity: (() -> Void)?
 
     private let display: DisplayOverview
     private let snapshot: OverviewSnapshot
-    private let performance: PreviewPerformanceModel
     private let showsShelf: Bool
-    private let showsHUD: Bool
     private let displayOrigin: CGPoint
     private let windowDescriptors: [WindowDescriptor]
 
@@ -31,15 +32,22 @@ final class OverviewDisplayView: NSView {
     private var cardLayers: [CGWindowID: WindowCardLayer] = [:]
     private var titleLayers: [CGWindowID: WindowTitleLayer] = [:]
     private var previewObservers: [CGWindowID: AnyCancellable] = [:]
-    private var performanceObservers = Set<AnyCancellable>()
     private var shelfButtons: [ShelfItemButton] = []
     private var newWindowButtons: [NewWindowButton] = []
     private var desktopButton: DesktopButton?
-    private var hudView: PerformanceHUDView?
     private var trackingAreaRef: NSTrackingArea?
     private var hoveredWindowID: CGWindowID?
     private var isExpanded = false
+    private var mouseIdleTimer: Timer?
     private var goneWindowIDs: Set<CGWindowID> = []
+    /// Window hit on mouseDown; selection runs on mouseUp only when no drag occurred.
+    private var pendingWindowSelect: WindowDescriptor?
+    private var pendingWindowSelectOrigin: CGPoint?
+    private var pendingWindowSelectDidDrag = false
+    private var lastDragLocalPoint: CGPoint?
+    private var dragSavedCardZ: CGFloat?
+    private var dragSavedTitleZ: CGFloat?
+    private let pendingWindowSelectDragThreshold: CGFloat = 5
 
     override var isFlipped: Bool {
         true
@@ -48,15 +56,11 @@ final class OverviewDisplayView: NSView {
     init(
         display: DisplayOverview,
         snapshot: OverviewSnapshot,
-        performance: PreviewPerformanceModel,
-        showsShelf: Bool,
-        showsHUD: Bool
+        showsShelf: Bool
     ) {
         self.display = display
         self.snapshot = snapshot
-        self.performance = performance
         self.showsShelf = showsShelf
-        self.showsHUD = showsHUD
         displayOrigin = display.localFrame.origin
         windowDescriptors = snapshot.windows
             .filter { $0.displayID == display.id }
@@ -94,7 +98,6 @@ final class OverviewDisplayView: NSView {
         buildWindowLayers()
         buildShelfButtonsIfNeeded()
         buildDesktopButtonIfNeeded()
-        buildHUDIfNeeded()
     }
 
     @available(*, unavailable)
@@ -136,7 +139,15 @@ final class OverviewDisplayView: NSView {
         wallpaperLayer.frame = bounds
         backgroundDimLayer.frame = bounds
         layoutBottomRow()
-        layoutHUDIfNeeded()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        guard isExpanded else {
+            return
+        }
+        // Non-key overlay panels often stop receiving `mouseMoved` on secondary displays.
+        window?.makeKeyAndOrderFront(nil)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -145,6 +156,7 @@ final class OverviewDisplayView: NSView {
         }
 
         setHoveredWindow(hitTestWindow(at: convert(event.locationInWindow, from: nil))?.id)
+        onMouseActivity?()
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -159,11 +171,167 @@ final class OverviewDisplayView: NSView {
         }
 
         if let descriptor = hitTestWindow(at: localPoint) {
-            onWindowSelected?(descriptor)
+            pendingWindowSelect = descriptor
+            pendingWindowSelectOrigin = localPoint
+            pendingWindowSelectDidDrag = false
+            lastDragLocalPoint = nil
+            dragSavedCardZ = nil
+            dragSavedTitleZ = nil
             return
         }
 
+        pendingWindowSelect = nil
+        pendingWindowSelectOrigin = nil
+        pendingWindowSelectDidDrag = false
+        lastDragLocalPoint = nil
+        dragSavedCardZ = nil
+        dragSavedTitleZ = nil
         onBackgroundClick?()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isExpanded,
+              let descriptor = pendingWindowSelect,
+              !goneWindowIDs.contains(descriptor.id),
+              pendingWindowSelectOrigin != nil
+        else {
+            return
+        }
+
+        let localPoint = convert(event.locationInWindow, from: nil)
+
+        if !pendingWindowSelectDidDrag, let origin = pendingWindowSelectOrigin {
+            let dx = localPoint.x - origin.x
+            let dy = localPoint.y - origin.y
+            if hypot(dx, dy) >= pendingWindowSelectDragThreshold {
+                pendingWindowSelectDidDrag = true
+                lastDragLocalPoint = localPoint
+                onInteractionChanged?(true)
+                bringDraggedWindowToFront(descriptor)
+            }
+            return
+        }
+
+        guard pendingWindowSelectDidDrag, let last = lastDragLocalPoint else {
+            return
+        }
+
+        let ddx = localPoint.x - last.x
+        let ddy = localPoint.y - last.y
+        lastDragLocalPoint = localPoint
+        guard ddx != 0 || ddy != 0 else {
+            return
+        }
+
+        descriptor.targetFrame.origin.x += ddx
+        descriptor.targetFrame.origin.y += ddy
+        descriptor.titleBarFrame.origin.x += ddx
+        descriptor.titleBarFrame.origin.y += ddy
+        clampWindowFramesWithinBounds(descriptor)
+        syncWindowLayerPositions(for: descriptor)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let didDrag = pendingWindowSelectDidDrag
+        let descriptorForDrag = pendingWindowSelect
+
+        defer {
+            if didDrag {
+                onInteractionChanged?(false)
+            }
+            if didDrag, let descriptor = descriptorForDrag {
+                restoreDraggedWindowZOrder(for: descriptor)
+            }
+            pendingWindowSelect = nil
+            pendingWindowSelectOrigin = nil
+            pendingWindowSelectDidDrag = false
+            lastDragLocalPoint = nil
+        }
+
+        guard isExpanded, let descriptor = descriptorForDrag else {
+            return
+        }
+
+        if didDrag {
+            return
+        }
+
+        let localPoint = convert(event.locationInWindow, from: nil)
+        guard hitTestWindow(at: localPoint)?.id == descriptor.id else {
+            return
+        }
+
+        onWindowSelected?(descriptor)
+    }
+
+    private func bringDraggedWindowToFront(_ descriptor: WindowDescriptor) {
+        guard let card = cardLayers[descriptor.id], let title = titleLayers[descriptor.id] else {
+            return
+        }
+        if dragSavedCardZ == nil {
+            dragSavedCardZ = card.zPosition
+            dragSavedTitleZ = title.zPosition
+        }
+        card.zPosition = 100_000
+        title.zPosition = 100_001
+    }
+
+    private func restoreDraggedWindowZOrder(for descriptor: WindowDescriptor) {
+        guard let card = cardLayers[descriptor.id], let title = titleLayers[descriptor.id] else {
+            dragSavedCardZ = nil
+            dragSavedTitleZ = nil
+            return
+        }
+        if let zc = dragSavedCardZ, let zt = dragSavedTitleZ {
+            card.zPosition = zc
+            title.zPosition = zt
+        }
+        dragSavedCardZ = nil
+        dragSavedTitleZ = nil
+    }
+
+    private func clampWindowFramesWithinBounds(_ descriptor: WindowDescriptor) {
+        let localCard = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        let localTitle = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        let union = localCard.union(localTitle)
+        let clamped = clampRect(union, into: bounds)
+        let ddx = clamped.minX - union.minX
+        let ddy = clamped.minY - union.minY
+        guard ddx != 0 || ddy != 0 else {
+            return
+        }
+        descriptor.targetFrame.origin.x += ddx
+        descriptor.targetFrame.origin.y += ddy
+        descriptor.titleBarFrame.origin.x += ddx
+        descriptor.titleBarFrame.origin.y += ddy
+    }
+
+    private func clampRect(_ rect: CGRect, into bounds: CGRect) -> CGRect {
+        var r = rect
+        if r.width <= bounds.width {
+            r.origin.x = min(max(r.origin.x, bounds.minX), bounds.maxX - r.width)
+        } else {
+            r.origin.x = bounds.minX
+        }
+        if r.height <= bounds.height {
+            r.origin.y = min(max(r.origin.y, bounds.minY), bounds.maxY - r.height)
+        } else {
+            r.origin.y = bounds.minY
+        }
+        return r
+    }
+
+    private func syncWindowLayerPositions(for descriptor: WindowDescriptor) {
+        guard let card = cardLayers[descriptor.id], let title = titleLayers[descriptor.id] else {
+            return
+        }
+        let localTarget = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        let localTitle = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        card.position = CGPoint(x: localTarget.midX, y: localTarget.midY)
+        title.position = CGPoint(x: localTitle.midX, y: localTitle.midY)
+        CATransaction.commit()
     }
 
     // MARK: - Expand / hover
@@ -183,12 +351,14 @@ final class OverviewDisplayView: NSView {
         backgroundDimLayer.opacity = 1
         backgroundDimLayer.add(dimAnimation, forKey: "dimOpacity")
 
+        // Cap at 0.99 so macOS doesn't consider underlying windows fully occluded —
+        // otherwise the compositor stops updating them and ScreenCaptureKit returns stale frames.
         let wallpaperAnimation = CABasicAnimation(keyPath: "opacity")
         wallpaperAnimation.fromValue = Float(0)
-        wallpaperAnimation.toValue = Float(1)
+        wallpaperAnimation.toValue = Float(0.99)
         wallpaperAnimation.duration = min(duration, 0.12)
         wallpaperAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        wallpaperLayer.opacity = 1
+        wallpaperLayer.opacity = 0.99
         wallpaperLayer.add(wallpaperAnimation, forKey: "wallpaperOpacity")
 
         for titleLayer in titleLayers.values {
@@ -217,12 +387,35 @@ final class OverviewDisplayView: NSView {
         setHoveredWindow(nil)
     }
 
+    func notifyMouseActivity() {
+        setWallpaperOpaque(true)
+    }
+
     func close() {
-        for observer in previewObservers.values {
-            observer.cancel()
-        }
+        mouseIdleTimer?.invalidate()
+        mouseIdleTimer = nil
         previewObservers.removeAll()
-        performanceObservers.removeAll()
+    }
+
+    private var wallpaperIsOpaque = false
+
+    private func setWallpaperOpaque(_ opaque: Bool) {
+        mouseIdleTimer?.invalidate()
+        mouseIdleTimer = nil
+
+        if opaque != wallpaperIsOpaque {
+            wallpaperIsOpaque = opaque
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            wallpaperLayer.opacity = opaque ? 1.0 : 0.99
+            CATransaction.commit()
+        }
+
+        if opaque {
+            mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
+                self?.setWallpaperOpaque(false)
+            }
+        }
     }
 
     // MARK: - Live inventory updates
@@ -310,12 +503,14 @@ final class OverviewDisplayView: NSView {
             rootLayer.addSublayer(titleLayer)
             titleLayers[descriptor.id] = titleLayer
 
-            previewObservers[descriptor.id] = descriptor.$previewImage
-                .sink { [weak cardLayer] image in
-                    cardLayer?.setPreviewImage(image)
-                }
-
             cardLayer.setPreviewImage(descriptor.previewImage)
+
+            previewObservers[descriptor.id] = descriptor.$previewImageRevision
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.cardLayers[descriptor.id]?.setPreviewImage(descriptor.previewImage)
+                }
         }
     }
 
@@ -380,33 +575,6 @@ final class OverviewDisplayView: NSView {
             let desktopY = y + (buttonSize.height - smallButtonSize.height) / 2
             desktopButton.frame = CGRect(origin: CGPoint(x: x, y: desktopY), size: smallButtonSize)
         }
-    }
-
-    private func buildHUDIfNeeded() {
-        guard showsHUD else {
-            return
-        }
-
-        let hudView = PerformanceHUDView(frame: CGRect(x: 16, y: 16, width: 132, height: 56))
-        addSubview(hudView)
-        self.hudView = hudView
-        hudView.update(fps: performance.displayedFPS, liveSessionCount: performance.liveSessionCount, liveFrozen: performance.liveFrozen)
-
-        performance.$displayedFPS
-            .combineLatest(performance.$liveSessionCount, performance.$liveFrozen)
-            .receive(on: RunLoop.main)
-            .sink { [weak hudView] fps, liveCount, liveFrozen in
-                hudView?.update(fps: fps, liveSessionCount: liveCount, liveFrozen: liveFrozen)
-            }
-            .store(in: &performanceObservers)
-    }
-
-    private func layoutHUDIfNeeded() {
-        guard let hudView else {
-            return
-        }
-
-        hudView.frame.origin = CGPoint(x: 16, y: 16)
     }
 
     private func hitTestWindow(at localPoint: CGPoint) -> WindowDescriptor? {
@@ -605,9 +773,13 @@ private final class WindowCardLayer: CALayer {
 private final class WindowTitleLayer: CALayer {
     private let iconLayer = CALayer()
     private let textLayer = CATextLayer()
+    private let appName: String
+    private let windowTitle: String?
 
     init(descriptor: WindowDescriptor, displayOrigin: CGPoint) {
         let localFrame = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        self.appName = descriptor.appName
+        self.windowTitle = descriptor.title
 
         super.init()
 
@@ -626,12 +798,11 @@ private final class WindowTitleLayer: CALayer {
         iconLayer.masksToBounds = true
         addSublayer(iconLayer)
 
-        textLayer.string = descriptor.displayTitle
-        textLayer.font = NSFont.systemFont(ofSize: 0, weight: .medium)
-        textLayer.fontSize = 14
-        textLayer.foregroundColor = NSColor.white.withAlphaComponent(0.94).cgColor
+        // NSAttributedString: do not set CATextLayer fontSize/font/foregroundColor — they override attributes.
         textLayer.alignmentMode = .left
         textLayer.truncationMode = .end
+        textLayer.isWrapped = false
+        textLayer.masksToBounds = true
         textLayer.contentsScale = contentsScale
         addSublayer(textLayer)
 
@@ -642,7 +813,8 @@ private final class WindowTitleLayer: CALayer {
         guard let layer = layer as? WindowTitleLayer else {
             fatalError("Unsupported layer copy")
         }
-
+        self.appName = layer.appName
+        self.windowTitle = layer.windowTitle
         super.init(layer: layer)
     }
 
@@ -664,44 +836,87 @@ private final class WindowTitleLayer: CALayer {
     }
 
     private func updateGeometry() {
-        let iconSize: CGFloat = 24
+        let iconSize: CGFloat = 28
         iconLayer.frame = CGRect(x: 10, y: (bounds.height - iconSize) / 2, width: iconSize, height: iconSize)
-        let textX: CGFloat = 10 + iconSize + 8
-        textLayer.frame = CGRect(x: textX, y: (bounds.height - 20) / 2, width: max(32, bounds.width - textX - 10), height: 20)
-    }
-}
-
-// MARK: - Performance HUD
-
-private final class PerformanceHUDView: NSView {
-    private let label = NSTextField(labelWithString: "")
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
-        layer?.cornerRadius = 10
-
-        label.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
-        label.textColor = .white
-        label.alignment = .left
-        label.maximumNumberOfLines = 3
-        addSubview(label)
+        let textX: CGFloat = 10 + iconSize + 10
+        let textHeight: CGFloat = 22
+        let textWidth = max(32, bounds.width - textX - 10)
+        textLayer.frame = CGRect(
+            x: textX,
+            y: (bounds.height - textHeight) / 2,
+            width: textWidth,
+            height: textHeight
+        )
+        textLayer.string = Self.makeTitleString(
+            appName: appName,
+            windowTitle: windowTitle,
+            maxWidth: textWidth
+        )
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
+    private static func attributedWidth(_ attr: NSAttributedString, height: CGFloat) -> CGFloat {
+        attr.boundingRect(
+            with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: height),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        ).width
     }
 
-    override func layout() {
-        super.layout()
-        label.frame = bounds.insetBy(dx: 10, dy: 8)
+    private static func truncatedTail(
+        _ text: String,
+        attributes: [NSAttributedString.Key: Any],
+        maxWidth: CGFloat,
+        height: CGFloat
+    ) -> NSAttributedString {
+        guard maxWidth > 0, !text.isEmpty else { return NSAttributedString() }
+        let full = NSAttributedString(string: text, attributes: attributes)
+        if attributedWidth(full, height: height) <= maxWidth { return full }
+        let ellipsis = "…"
+        let ellipsisAttr = NSAttributedString(string: ellipsis, attributes: attributes)
+        let ellipsisW = attributedWidth(ellipsisAttr, height: height)
+        if maxWidth < ellipsisW { return ellipsisAttr }
+        var low = 0
+        var high = text.count
+        while low < high {
+            let mid = (low + high + 1) / 2
+            let prefix = String(text.prefix(mid))
+            let test = NSAttributedString(string: prefix + ellipsis, attributes: attributes)
+            if attributedWidth(test, height: height) <= maxWidth { low = mid } else { high = mid - 1 }
+        }
+        if low == 0 { return ellipsisAttr }
+        return NSAttributedString(string: String(text.prefix(low)) + ellipsis, attributes: attributes)
     }
 
-    func update(fps: Int, liveSessionCount: Int, liveFrozen: Bool) {
-        label.stringValue = "FPS \(fps)\nLive \(liveSessionCount)\n\(liveFrozen ? "Live frozen" : "Live streaming")"
+    private static func makeTitleString(appName: String, windowTitle: String?, maxWidth: CGFloat) -> NSAttributedString {
+        let appAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.98)
+        ]
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.82)
+        ]
+        let separatorAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.55)
+        ]
+
+        let measureHeight: CGFloat = 26
+        let trimmedTitle = windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedTitle.isEmpty, trimmedTitle != appName else {
+            return truncatedTail(appName, attributes: appAttributes, maxWidth: maxWidth, height: measureHeight)
+        }
+
+        let prefix = NSMutableAttributedString(string: appName, attributes: appAttributes)
+        prefix.append(NSAttributedString(string: " — ", attributes: separatorAttributes))
+        let prefixWidth = attributedWidth(prefix, height: measureHeight)
+        if prefixWidth >= maxWidth {
+            return truncatedTail(appName, attributes: appAttributes, maxWidth: maxWidth, height: measureHeight)
+        }
+
+        let titleBudget = max(0, maxWidth - prefixWidth)
+        let titlePart = truncatedTail(trimmedTitle, attributes: titleAttributes, maxWidth: titleBudget, height: measureHeight)
+        prefix.append(titlePart)
+        return prefix
     }
 }
 

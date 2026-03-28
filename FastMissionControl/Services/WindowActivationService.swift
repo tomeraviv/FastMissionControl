@@ -22,11 +22,79 @@ final class WindowActivationService {
         _ = app?.activate(options: [.activateAllWindows])
     }
 
-    // MARK: - Slow path (call AFTER overlay is hidden, in background)
+    // MARK: - Pre-resolution (call while overlay is still open)
 
-    /// Resolve and raise the specific window via Accessibility.
-    /// This may block on AX IPC so it must run *after* the overlay
-    /// is already hidden to avoid any perceived lag.
+    private var cachedHandlesByPID: [pid_t: [AXWindowHandle]] = [:]
+
+    /// Batch-resolve AX handles for every window in the snapshot so that
+    /// subsequent raise calls are nearly instant (no AX query at click time).
+    /// Queries AX once per unique PID, then matches each descriptor.
+    func preResolveAXHandles(for snapshot: OverviewSnapshot) {
+        cachedHandlesByPID.removeAll()
+        for descriptor in snapshot.windows where descriptor.axWindow == nil {
+            if cachedHandlesByPID[descriptor.pid] == nil {
+                cachedHandlesByPID[descriptor.pid] = loadAXWindows(for: descriptor.pid)
+            }
+            descriptor.axWindow = matcher.match(
+                title: descriptor.title,
+                appKitBounds: descriptor.appKitBounds,
+                candidates: cachedHandlesByPID[descriptor.pid]!
+            )
+        }
+    }
+
+    /// Eagerly resolve the AX handle for a single descriptor on hover
+    /// so the click path has zero AX cost.
+    func ensureAXHandle(for descriptor: WindowDescriptor) {
+        guard descriptor.axWindow == nil else { return }
+        if cachedHandlesByPID[descriptor.pid] == nil {
+            cachedHandlesByPID[descriptor.pid] = loadAXWindows(for: descriptor.pid)
+        }
+        descriptor.axWindow = matcher.match(
+            title: descriptor.title,
+            appKitBounds: descriptor.appKitBounds,
+            candidates: cachedHandlesByPID[descriptor.pid]!
+        )
+    }
+
+    /// Pre-raise the window on hover so the click path is near-zero.
+    /// Sets the AX main/focused/raise attributes ahead of time — the
+    /// window won't actually appear because our overlay is on top.
+    private var preRaisedPid: pid_t?
+    func preRaise(descriptor: WindowDescriptor) {
+        ensureAXHandle(for: descriptor)
+        guard let handle = descriptor.axWindow else { return }
+        let application = AXUIElementCreateApplication(descriptor.pid)
+        _ = AXUIElementSetAttributeValue(handle.element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, handle.element)
+        _ = AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString)
+        preRaisedPid = descriptor.pid
+    }
+
+    func preRaise(windowID: CGWindowID, pid: pid_t) {
+        guard let cgFrame = cgWindowFrame(for: windowID) else { return }
+        if cachedHandlesByPID[pid] == nil {
+            cachedHandlesByPID[pid] = loadAXWindows(for: pid)
+        }
+        guard let best = closestHandle(to: cgFrame, among: cachedHandlesByPID[pid] ?? []) else { return }
+        let application = AXUIElementCreateApplication(pid)
+        _ = AXUIElementSetAttributeValue(best.element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, best.element)
+        _ = AXUIElementPerformAction(best.element, kAXRaiseAction as CFString)
+        preRaisedPid = pid
+    }
+
+    var currentPreRaisedPid: pid_t? { preRaisedPid }
+
+    func clearPreRaise() {
+        preRaisedPid = nil
+    }
+
+    // MARK: - Raise (call AFTER overlay is hidden, synchronously)
+
+    /// Raise the specific window via its pre-resolved (or lazily resolved)
+    /// AX handle.  Call synchronously right after dismiss — the overlay is
+    /// already invisible so the few ms of AX IPC is imperceptible.
     func raiseSpecificWindow(descriptor: WindowDescriptor) {
         let handle = descriptor.axWindow ?? resolveWindowHandle(for: descriptor)
         descriptor.axWindow = handle
@@ -46,6 +114,29 @@ final class WindowActivationService {
         _ = AXUIElementSetAttributeValue(handle.element, kAXMainAttribute as CFString, kCFBooleanTrue)
         _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, handle.element)
         _ = AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString)
+    }
+
+    /// Raise a window identified only by its CGWindowID and owning pid.
+    /// Used for brand-new windows discovered while the overview is open,
+    /// where no WindowDescriptor exists.
+    func raiseSpecificWindow(windowID: CGWindowID, pid: pid_t) {
+        guard let cgFrame = cgWindowFrame(for: windowID) else { return }
+        let handles = loadAXWindows(for: pid)
+        guard let best = closestHandle(to: cgFrame, among: handles) else { return }
+
+        let application = AXUIElementCreateApplication(pid)
+
+        if best.isMinimized {
+            _ = AXUIElementSetAttributeValue(
+                best.element,
+                kAXMinimizedAttribute as CFString,
+                kCFBooleanFalse
+            )
+        }
+
+        _ = AXUIElementSetAttributeValue(best.element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, best.element)
+        _ = AXUIElementPerformAction(best.element, kAXRaiseAction as CFString)
     }
 
     /// Resolve and raise the first restorable shelf window.
@@ -129,5 +220,27 @@ final class WindowActivationService {
         var size = CGSize.zero
         AXValueGetValue(axValue as! AXValue, .cgSize, &size)
         return size
+    }
+
+    /// Look up the Quartz frame for a specific CGWindowID.
+    private func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
+              let info = list.first,
+              let boundsDict = info[kCGWindowBounds as String] as? [String: Any] else {
+            return nil
+        }
+        return CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+    }
+
+    /// Pick the AX handle whose frame is closest to the given Quartz frame.
+    private func closestHandle(to quartzFrame: CGRect, among handles: [AXWindowHandle]) -> AXWindowHandle? {
+        handles.min { lhs, rhs in
+            frameDelta(lhs.frame, quartzFrame) < frameDelta(rhs.frame, quartzFrame)
+        }
+    }
+
+    private func frameDelta(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        abs(a.origin.x - b.origin.x) + abs(a.origin.y - b.origin.y)
+            + abs(a.width - b.width) + abs(a.height - b.height)
     }
 }

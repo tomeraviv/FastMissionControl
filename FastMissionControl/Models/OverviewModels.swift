@@ -50,7 +50,9 @@ final class WindowDescriptor: ObservableObject, Identifiable {
     var targetFrame: CGRect = .zero
     var titleBarFrame: CGRect = .zero
 
-    @Published var previewImage: CGImage?
+    /// Live/still capture; same `CGImage` instance may be reused across frames — bump `previewImageRevision` via `updatePreviewImage`.
+    private(set) var previewImage: CGImage?
+    @Published private(set) var previewImageRevision: UInt64 = 0
 
     init(
         id: CGWindowID,
@@ -81,6 +83,11 @@ final class WindowDescriptor: ObservableObject, Identifiable {
         self.zIndex = zIndex
         self.axWindow = axWindow
         self.previewImage = previewImage
+    }
+
+    func updatePreviewImage(_ image: CGImage?) {
+        previewImage = image
+        previewImageRevision &+= 1
     }
 
     var sortTitle: String {

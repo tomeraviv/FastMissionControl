@@ -63,4 +63,60 @@ struct FastMissionControlTests {
         #expect(coarseColumns.count >= 2)
     }
 
+    @Test func clusteredLargeWindowsFillMostOfOverviewSpace() {
+        let display = DisplayOverview(
+            id: 1,
+            localFrame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
+            windowFrame: CGRect(x: 0, y: 0, width: 1728, height: 1117)
+        )
+        let icon = NSImage(size: NSSize(width: 16, height: 16))
+
+        let windows: [WindowDescriptor] = (0..<10).map { index in
+            let source = CGRect(x: 180, y: 140, width: 1320, height: 860)
+            return WindowDescriptor(
+                id: CGWindowID(20_000 + index),
+                shareableWindow: nil,
+                pid: 1,
+                bundleIdentifier: "com.example.fill\(index)",
+                appName: "Fill App \(index)",
+                title: "Fill Window \(index)",
+                icon: icon,
+                displayID: display.id,
+                sourceFrame: source,
+                appKitBounds: source,
+                zIndex: index,
+                axWindow: nil
+            )
+        }
+
+        let snapshot = OverviewSnapshot(
+            windowFrame: display.windowFrame,
+            canvasSize: display.windowFrame.size,
+            displays: [display],
+            windows: windows,
+            shelfItems: [],
+            cursorDisplayID: display.id,
+            livePreviewLimit: 10
+        )
+
+        SpatialOverviewLayout().apply(to: snapshot)
+
+        let union = windows.reduce(CGRect.null) { partial, window in
+            partial.union(window.targetFrame)
+        }
+
+        let expectedContentRect = CGRect(
+            x: 48,
+            y: 48 + 46, // top padding + title reserve
+            width: 1728 - 96,
+            height: 1117 - 48 - 130 - 46
+        )
+
+        let horizontalFill = union.width / expectedContentRect.width
+        let verticalFill = union.height / expectedContentRect.height
+
+        #expect(horizontalFill > 0.82)
+        #expect(verticalFill > 0.82)
+    }
+
 }

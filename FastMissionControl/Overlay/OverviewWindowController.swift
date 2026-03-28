@@ -15,14 +15,18 @@ final class OverviewWindowController {
     private let primaryDisplayID: CGDirectDisplayID?
     private let onDismiss: () -> Void
     private let onHoverChanged: (CGWindowID?) -> Void
+    private let onMouseMoving: (Bool) -> Void
     private var hoveredWindowID: CGWindowID?
     private var hasDismissed = false
+    private var mouseIdleTimer: Timer?
+    private var isMouseMoving = false
 
     init(
         snapshot: OverviewSnapshot,
-        performance: PreviewPerformanceModel,
         onDismiss: @escaping () -> Void,
         onHoverChanged: @escaping (CGWindowID?) -> Void,
+        onMouseMoving: @escaping (Bool) -> Void,
+        onInteractionChanged: @escaping (Bool) -> Void,
         onWindowSelected: @escaping (WindowDescriptor) -> Void,
         onShelfItemSelected: @escaping (AppShelfItem) -> Void,
         onDesktopRequested: @escaping () -> Void,
@@ -30,6 +34,7 @@ final class OverviewWindowController {
     ) {
         self.onDismiss = onDismiss
         self.onHoverChanged = onHoverChanged
+        self.onMouseMoving = onMouseMoving
 
         let primaryDisplayID = snapshot.cursorDisplayID ?? snapshot.displays.first?.id
         self.primaryDisplayID = primaryDisplayID
@@ -38,11 +43,12 @@ final class OverviewWindowController {
             OverviewDisplayPanelController(
                 display: display,
                 snapshot: snapshot,
-                performance: performance,
                 showsShelf: display.id == primaryDisplayID,
-                showsHUD: display.id == primaryDisplayID,
                 onHoverChanged: { [weak self] windowID in
                     self?.setHoveredWindow(windowID)
+                },
+                onMouseActivity: { [weak self] in
+                    self?.broadcastMouseActivity()
                 },
                 onBackgroundClick: { [weak self] in
                     self?.close()
@@ -50,7 +56,8 @@ final class OverviewWindowController {
                 onWindowSelected: onWindowSelected,
                 onShelfItemSelected: onShelfItemSelected,
                 onDesktopRequested: onDesktopRequested,
-                onNewWindowSelected: onNewWindowSelected
+                onNewWindowSelected: onNewWindowSelected,
+                onInteractionChanged: onInteractionChanged
             )
         }
 
@@ -69,6 +76,20 @@ final class OverviewWindowController {
         }
 
         expand()
+        promotePanelUnderCursor()
+    }
+
+    /// The overlay under the mouse must be key so `mouseMoved` delivers reliably on
+    /// multi-monitor setups (otherwise only the primary panel receives hover updates).
+    private func promotePanelUnderCursor() {
+        let mouseLocation = NSEvent.mouseLocation
+        for panelController in panelControllers {
+            guard let frame = panelController.window?.frame, frame.contains(mouseLocation) else {
+                continue
+            }
+            panelController.window?.makeKeyAndOrderFront(nil)
+            return
+        }
     }
 
     /// Cleans up a pre-built controller that was never shown, without
@@ -92,6 +113,8 @@ final class OverviewWindowController {
         }
 
         hasDismissed = true
+        mouseIdleTimer?.invalidate()
+        mouseIdleTimer = nil
         setHoveredWindow(nil)
         onDismiss()
 
@@ -125,6 +148,23 @@ final class OverviewWindowController {
         }
     }
 
+    private func broadcastMouseActivity() {
+        for panelController in panelControllers {
+            panelController.notifyMouseActivity()
+        }
+
+        mouseIdleTimer?.invalidate()
+        if !isMouseMoving {
+            isMouseMoving = true
+            onMouseMoving(true)
+        }
+        mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.isMouseMoving = false
+            self.onMouseMoving(false)
+        }
+    }
+
     private func setHoveredWindow(_ windowID: CGWindowID?) {
         guard hoveredWindowID != windowID else {
             return
@@ -150,23 +190,21 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
     init(
         display: DisplayOverview,
         snapshot: OverviewSnapshot,
-        performance: PreviewPerformanceModel,
         showsShelf: Bool,
-        showsHUD: Bool,
         onHoverChanged: @escaping (CGWindowID?) -> Void,
+        onMouseActivity: @escaping () -> Void,
         onBackgroundClick: @escaping () -> Void,
         onWindowSelected: @escaping (WindowDescriptor) -> Void,
         onShelfItemSelected: @escaping (AppShelfItem) -> Void,
         onDesktopRequested: @escaping () -> Void,
-        onNewWindowSelected: @escaping (CGWindowID, pid_t) -> Void
+        onNewWindowSelected: @escaping (CGWindowID, pid_t) -> Void,
+        onInteractionChanged: @escaping (Bool) -> Void
     ) {
         self.display = display
         overlayView = OverviewDisplayView(
             display: display,
             snapshot: snapshot,
-            performance: performance,
-            showsShelf: showsShelf,
-            showsHUD: showsHUD
+            showsShelf: showsShelf
         )
 
         let panel = OverviewPanel(
@@ -200,11 +238,13 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         overlayView.frame = CGRect(origin: .zero, size: display.localFrame.size)
         overlayView.autoresizingMask = [.width, .height]
         overlayView.onHoverChanged = onHoverChanged
+        overlayView.onMouseActivity = onMouseActivity
         overlayView.onBackgroundClick = onBackgroundClick
         overlayView.onWindowSelected = onWindowSelected
         overlayView.onShelfItemSelected = onShelfItemSelected
         overlayView.onDesktopRequested = onDesktopRequested
         overlayView.onNewWindowSelected = onNewWindowSelected
+        overlayView.onInteractionChanged = onInteractionChanged
         panel.contentView = overlayView
     }
 
@@ -235,6 +275,10 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
 
     func setHoveredWindow(_ windowID: CGWindowID?) {
         overlayView.setHoveredWindow(windowID)
+    }
+
+    func notifyMouseActivity() {
+        overlayView.notifyMouseActivity()
     }
 
     func markWindowGone(_ windowID: CGWindowID) {

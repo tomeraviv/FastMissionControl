@@ -182,8 +182,11 @@ final class WindowInventoryService {
             uniquingKeysWith: { first, _ in first }
         )
 
-        for descriptor in snapshot.windows where descriptor.shareableWindow == nil {
-            descriptor.shareableWindow = scWindowsByID[descriptor.id]
+        // Must publish SCWindow handles on the main actor: the live preview loop reads them on MainActor.
+        await MainActor.run {
+            for descriptor in snapshot.windows where descriptor.shareableWindow == nil {
+                descriptor.shareableWindow = scWindowsByID[descriptor.id]
+            }
         }
     }
 
