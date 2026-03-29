@@ -1,6 +1,6 @@
 # Fast Mission Control
 
-Fast Mission Control is an open-source macOS app that makes Mission Control feel fast again, especially on 4K+, 5K, ultrawide, and multi-monitor setups where Apple's default Mission Control often feels laggy and slow.
+Fast Mission Control is an open-source macOS app that **makes Mission Control feel fast again**, especially on 4K+, 5K, ultrawide, high refresh-rate and multi-monitor setups where Apple's default Mission Control often feels **laggy and slow**.
 
 If you found this repo because you searched Google or Reddit for "How to speed up animations on macOS" or "Speed up Mission Control animations in macOS", the old terminal tweak:
 
@@ -14,12 +14,12 @@ https://tomeraviv.github.io/FastMissionControl/
 
 ## What It Does
 
-- Opens a fast custom Mission Control-style overview.
-- Preserves window positions across multiple displays.
+- Opens a fast custom Mission Control-style overview **that does not stutter**.
+- Has better window selector layout than Misson Control.
 - Shows still and live previews for windows.
-- Lets you select windows quickly and restore minimized windows.
 - Includes a desktop action and app shelf behavior.
 - Uses an extra mouse button trigger by default.
+- Fixes decade old known Misson Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
 
 ## Status
 
