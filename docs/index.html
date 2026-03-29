@@ -17,352 +17,1151 @@
       property="og:description"
       content="An open-source fix for laggy Mission Control on macOS."
     />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <style>
-      @import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;700&display=swap");
-
       :root {
-        --bg: #f4efe5;
-        --bg-accent: #dfe9dc;
-        --ink: #0f1720;
-        --muted: #425161;
-        --line: rgba(15, 23, 32, 0.12);
-        --panel: rgba(255, 251, 245, 0.82);
-        --panel-strong: #fff9f1;
-        --accent: #ad3f1e;
-        --accent-soft: #f1c8aa;
-        --shadow: 0 24px 60px rgba(34, 42, 52, 0.12);
-        --radius: 24px;
+        --bg: #050507;
+        --surface: #0c0c10;
+        --surface-2: #131318;
+        --surface-3: #1a1a22;
+        --border: rgba(255, 255, 255, 0.06);
+        --border-hover: rgba(255, 255, 255, 0.12);
+        --text: #e8e8ed;
+        --text-muted: #8b8b9e;
+        --text-dim: #5a5a6e;
+        --accent: #6366f1;
+        --accent-light: #818cf8;
+        --accent-glow: rgba(99, 102, 241, 0.15);
+        --accent-glow-strong: rgba(99, 102, 241, 0.3);
+        --green: #22c55e;
+        --red: #ef4444;
+        --amber: #f59e0b;
+        --radius: 16px;
+        --radius-sm: 10px;
+        --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
       }
 
       * {
+        margin: 0;
+        padding: 0;
         box-sizing: border-box;
       }
 
-      body {
-        margin: 0;
-        font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
-        color: var(--ink);
-        background:
-          radial-gradient(circle at top left, rgba(173, 63, 30, 0.15), transparent 34%),
-          radial-gradient(circle at top right, rgba(68, 98, 76, 0.18), transparent 32%),
-          linear-gradient(180deg, var(--bg) 0%, #fbf7f1 42%, #f6f1e9 100%);
+      html {
+        scroll-behavior: smooth;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
       }
 
-      body::before {
-        content: "";
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        overflow-x: hidden;
+      }
+
+      /* --- Ambient background --- */
+      .bg-glow {
         position: fixed;
         inset: 0;
-        background-image:
-          linear-gradient(rgba(15, 23, 32, 0.03) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(15, 23, 32, 0.03) 1px, transparent 1px);
-        background-size: 32px 32px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 82%);
         pointer-events: none;
-      }
-
-      main {
-        position: relative;
-        width: min(1120px, calc(100vw - 32px));
-        margin: 0 auto;
-        padding: 32px 0 56px;
-      }
-
-      .hero,
-      .section {
-        background: var(--panel);
-        backdrop-filter: blur(10px);
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        box-shadow: var(--shadow);
-      }
-
-      .hero {
-        padding: 28px;
+        z-index: 0;
         overflow: hidden;
       }
 
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(255, 249, 241, 0.92);
-        border: 1px solid rgba(173, 63, 30, 0.18);
-        color: var(--accent);
-        font-size: 0.84rem;
-        letter-spacing: 0.03em;
-        text-transform: uppercase;
+      .bg-glow::before {
+        content: "";
+        position: absolute;
+        width: 900px;
+        height: 900px;
+        top: -300px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 70%);
+        animation: pulse 8s ease-in-out infinite alternate;
       }
 
-      h1,
-      h2 {
-        margin: 0;
-        line-height: 0.95;
+      .bg-glow::after {
+        content: "";
+        position: absolute;
+        width: 600px;
+        height: 600px;
+        bottom: -200px;
+        right: -100px;
+        background: radial-gradient(circle, rgba(139, 92, 246, 0.06) 0%, transparent 70%);
+        animation: pulse 10s ease-in-out infinite alternate-reverse;
+      }
+
+      @keyframes pulse {
+        from { opacity: 0.6; transform: translateX(-50%) scale(1); }
+        to { opacity: 1; transform: translateX(-50%) scale(1.15); }
+      }
+
+      .noise {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        opacity: 0.025;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        background-size: 128px 128px;
+      }
+
+      /* --- Layout --- */
+      .container {
+        position: relative;
+        z-index: 2;
+        width: min(1080px, calc(100% - 48px));
+        margin: 0 auto;
+      }
+
+      /* --- Nav --- */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        background: rgba(5, 5, 7, 0.72);
+        border-bottom: 1px solid var(--border);
+      }
+
+      nav .container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+      }
+
+      .nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        text-decoration: none;
+        color: var(--text);
+      }
+
+      .nav-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--accent), #8b5cf6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .nav-links a {
+        padding: 6px 14px;
+        border-radius: 8px;
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: 0.875rem;
+        font-weight: 500;
+        transition: color 0.2s, background 0.2s;
+      }
+
+      .nav-links a:hover {
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .btn-gh {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        background: var(--surface-3);
+        border: 1px solid var(--border);
+        color: var(--text);
+        text-decoration: none;
+        font-size: 0.85rem;
+        font-weight: 500;
+        transition: border-color 0.2s, background 0.2s;
+      }
+
+      .btn-gh:hover {
+        border-color: var(--border-hover);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .btn-gh svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+      }
+
+      /* --- Hero --- */
+      .hero {
+        padding: 100px 0 80px;
+        text-align: center;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 16px 6px 8px;
+        border-radius: 999px;
+        background: var(--accent-glow);
+        border: 1px solid rgba(99, 102, 241, 0.2);
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--accent-light);
+        letter-spacing: 0.02em;
+        margin-bottom: 28px;
+      }
+
+      .badge-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+        animation: blink 2s ease-in-out infinite;
+      }
+
+      @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
       }
 
       h1 {
-        max-width: 10ch;
-        margin-top: 18px;
-        font-family: "Instrument Serif", Georgia, serif;
-        font-size: clamp(3.2rem, 8vw, 6.6rem);
-        font-weight: 400;
+        font-size: clamp(2.8rem, 7vw, 4.5rem);
+        font-weight: 700;
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        max-width: 14ch;
+        margin: 0 auto 24px;
+        background: linear-gradient(180deg, #fff 30%, rgba(255, 255, 255, 0.5) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .hero-sub {
+        max-width: 560px;
+        margin: 0 auto 40px;
+        font-size: 1.15rem;
+        line-height: 1.7;
+        color: var(--text-muted);
+      }
+
+      .hero-actions {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .btn-primary {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 28px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, var(--accent), #7c3aed);
+        color: #fff;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 0.95rem;
+        border: none;
+        cursor: pointer;
+        transition: transform 0.15s, box-shadow 0.2s;
+        box-shadow: 0 0 24px rgba(99, 102, 241, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 0 40px rgba(99, 102, 241, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      }
+
+      .btn-secondary {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 28px;
+        border-radius: 12px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
+      }
+
+      .btn-secondary:hover {
+        border-color: var(--border-hover);
+        background: var(--surface-3);
+      }
+
+      /* --- Terminal block --- */
+      .terminal-wrapper {
+        margin: 64px auto 0;
+        max-width: 700px;
+      }
+
+      .terminal {
+        border-radius: var(--radius);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+      }
+
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 18px;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .terminal-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+
+      .terminal-dot.red { background: #ff5f57; }
+      .terminal-dot.yellow { background: #febc2e; }
+      .terminal-dot.green { background: #28c840; }
+
+      .terminal-title {
+        flex: 1;
+        text-align: center;
+        font-size: 0.78rem;
+        color: var(--text-dim);
+        font-family: var(--mono);
+      }
+
+      .terminal-body {
+        padding: 20px 22px 24px;
+        font-family: var(--mono);
+        font-size: 0.88rem;
+        line-height: 1.7;
+      }
+
+      .terminal-comment {
+        color: var(--text-dim);
+      }
+
+      .terminal-cmd {
+        color: var(--text-muted);
+      }
+
+      .terminal-cmd .prompt {
+        color: var(--green);
+        user-select: none;
+      }
+
+      .terminal-strike {
+        text-decoration: line-through;
+        color: var(--red);
+        opacity: 0.6;
+      }
+
+      .terminal-highlight {
+        color: var(--accent-light);
+      }
+
+      .terminal-note {
+        color: var(--amber);
+        font-style: italic;
+      }
+
+      /* --- Section shared --- */
+      section {
+        padding: 80px 0;
+      }
+
+      .section-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--accent-light);
+        margin-bottom: 16px;
+      }
+
+      .section-label::before {
+        content: "";
+        width: 20px;
+        height: 1px;
+        background: var(--accent);
       }
 
       h2 {
-        font-size: clamp(1.55rem, 3vw, 2.2rem);
+        font-size: clamp(1.8rem, 4vw, 2.6rem);
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        line-height: 1.15;
+        margin-bottom: 16px;
       }
 
-      .lede {
-        max-width: 58rem;
-        margin-top: 18px;
-        font-size: clamp(1.05rem, 2vw, 1.32rem);
-        line-height: 1.6;
-        color: var(--muted);
+      .section-desc {
+        max-width: 520px;
+        color: var(--text-muted);
+        font-size: 1.05rem;
+        line-height: 1.7;
+        margin-bottom: 48px;
       }
 
-      .hero-grid,
-      .cards,
-      .faq,
-      .checklist {
+      /* --- Problem section --- */
+      .problem-grid {
         display: grid;
+        grid-template-columns: 1fr 1fr;
         gap: 16px;
       }
 
-      .hero-grid {
-        grid-template-columns: 1.35fr 0.95fr;
-        margin-top: 28px;
+      .problem-card {
+        padding: 28px;
+        border-radius: var(--radius);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        transition: border-color 0.3s;
       }
 
-      .hero-card,
-      .card,
-      .faq-item,
-      .checklist-item {
-        background: var(--panel-strong);
-        border: 1px solid var(--line);
-        border-radius: 20px;
+      .problem-card:hover {
+        border-color: var(--border-hover);
       }
 
-      .hero-card {
-        padding: 20px;
+      .problem-card .icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        margin-bottom: 18px;
       }
 
-      .hero-card strong,
-      .metric {
-        display: block;
-        margin-bottom: 10px;
-        color: var(--accent);
-        font-size: 0.82rem;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
+      .problem-card .icon.red-icon {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.15);
       }
 
-      .command {
-        margin: 0;
-        padding: 18px;
-        overflow-x: auto;
-        border-radius: 18px;
-        background: #11161c;
-        color: #f9f2e7;
-        font-size: 0.96rem;
-        line-height: 1.55;
+      .problem-card h3 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 8px;
+        letter-spacing: -0.01em;
       }
 
-      .note {
-        margin-top: 14px;
-        color: var(--muted);
-        line-height: 1.6;
-      }
-
-      .section {
-        margin-top: 18px;
-        padding: 26px;
-      }
-
-      .cards {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        margin-top: 18px;
-      }
-
-      .card,
-      .faq-item,
-      .checklist-item {
-        padding: 20px;
-      }
-
-      .card p,
-      .faq-item p,
-      .checklist-item p {
-        margin: 10px 0 0;
-        color: var(--muted);
+      .problem-card p {
+        color: var(--text-muted);
+        font-size: 0.92rem;
         line-height: 1.65;
       }
 
-      .faq,
-      .checklist {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        margin-top: 18px;
+      /* --- Features --- */
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
       }
 
-      ul {
-        margin: 18px 0 0;
-        padding-left: 1.1rem;
-        color: var(--muted);
-        line-height: 1.8;
+      .feature-card {
+        padding: 28px;
+        border-radius: var(--radius);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        transition: border-color 0.3s, transform 0.3s;
       }
 
-      code {
-        font-family: "SFMono-Regular", "SF Mono", "Menlo", monospace;
-        font-size: 0.95em;
+      .feature-card:hover {
+        border-color: rgba(99, 102, 241, 0.2);
+        transform: translateY(-2px);
       }
 
-      .footer {
-        margin-top: 18px;
-        padding: 18px 22px 0;
-        color: var(--muted);
-        font-size: 0.96rem;
+      .feature-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: var(--accent-glow);
+        border: 1px solid rgba(99, 102, 241, 0.15);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        margin-bottom: 20px;
       }
 
-      @media (max-width: 900px) {
-        .hero-grid,
-        .cards,
-        .faq,
-        .checklist {
+      .feature-card h3 {
+        font-size: 1.02rem;
+        font-weight: 600;
+        margin-bottom: 8px;
+        letter-spacing: -0.01em;
+      }
+
+      .feature-card p {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        line-height: 1.65;
+      }
+
+      /* --- Comparison --- */
+      .comparison {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 48px;
+      }
+
+      .compare-col {
+        border-radius: var(--radius);
+        padding: 32px;
+        border: 1px solid var(--border);
+      }
+
+      .compare-col.before {
+        background: linear-gradient(135deg, rgba(239, 68, 68, 0.04), var(--surface));
+        border-color: rgba(239, 68, 68, 0.12);
+      }
+
+      .compare-col.after {
+        background: linear-gradient(135deg, rgba(34, 197, 94, 0.04), var(--surface));
+        border-color: rgba(34, 197, 94, 0.12);
+      }
+
+      .compare-tag {
+        display: inline-flex;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 20px;
+      }
+
+      .compare-col.before .compare-tag {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--red);
+      }
+
+      .compare-col.after .compare-tag {
+        background: rgba(34, 197, 94, 0.1);
+        color: var(--green);
+      }
+
+      .compare-col h3 {
+        font-size: 1.15rem;
+        font-weight: 600;
+        margin-bottom: 16px;
+        letter-spacing: -0.01em;
+      }
+
+      .compare-list {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .compare-list li {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        line-height: 1.55;
+      }
+
+      .compare-list .icon-sm {
+        flex-shrink: 0;
+        margin-top: 2px;
+        font-size: 0.85rem;
+      }
+
+      .compare-col.before .icon-sm { color: var(--red); }
+      .compare-col.after .icon-sm { color: var(--green); }
+
+      /* --- FAQ --- */
+      .faq-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+
+      .faq-card {
+        padding: 28px;
+        border-radius: var(--radius);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        transition: border-color 0.3s;
+      }
+
+      .faq-card:hover {
+        border-color: var(--border-hover);
+      }
+
+      .faq-card h3 {
+        font-size: 0.98rem;
+        font-weight: 600;
+        margin-bottom: 10px;
+        letter-spacing: -0.01em;
+      }
+
+      .faq-card p {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        line-height: 1.65;
+      }
+
+      /* --- Roadmap --- */
+      .roadmap-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .roadmap-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        padding: 20px 24px;
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        transition: border-color 0.3s;
+      }
+
+      .roadmap-item:hover {
+        border-color: var(--border-hover);
+      }
+
+      .roadmap-icon {
+        flex-shrink: 0;
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        background: rgba(245, 158, 11, 0.08);
+        border: 1px solid rgba(245, 158, 11, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        margin-top: 2px;
+      }
+
+      .roadmap-item h4 {
+        font-size: 0.92rem;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .roadmap-item p {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+        line-height: 1.55;
+      }
+
+      /* --- CTA --- */
+      .cta-section {
+        text-align: center;
+        padding: 80px 0 100px;
+      }
+
+      .cta-box {
+        padding: 60px 40px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.06), rgba(139, 92, 246, 0.04));
+        border: 1px solid rgba(99, 102, 241, 0.12);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .cta-box::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.1), transparent 60%);
+        pointer-events: none;
+      }
+
+      .cta-box h2 {
+        position: relative;
+        margin-bottom: 12px;
+      }
+
+      .cta-box p {
+        position: relative;
+        color: var(--text-muted);
+        font-size: 1.05rem;
+        line-height: 1.7;
+        max-width: 460px;
+        margin: 0 auto 32px;
+      }
+
+      .cta-box .hero-actions {
+        position: relative;
+      }
+
+      /* --- Footer --- */
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 28px 0;
+      }
+
+      footer .container {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      footer p {
+        color: var(--text-dim);
+        font-size: 0.82rem;
+      }
+
+      footer a {
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: 0.82rem;
+        transition: color 0.2s;
+      }
+
+      footer a:hover {
+        color: var(--text);
+      }
+
+      /* --- Divider --- */
+      .divider {
+        width: 100%;
+        height: 1px;
+        background: var(--border);
+      }
+
+      /* --- Fade-in animations --- */
+      .fade-up {
+        opacity: 0;
+        transform: translateY(24px);
+        transition: opacity 0.6s ease, transform 0.6s ease;
+      }
+
+      .fade-up.visible {
+        opacity: 1;
+        transform: none;
+      }
+
+      /* --- Responsive --- */
+      @media (max-width: 768px) {
+        .hero { padding: 72px 0 56px; }
+        .problem-grid,
+        .features-grid,
+        .comparison,
+        .faq-grid,
+        .roadmap-grid {
           grid-template-columns: 1fr;
         }
-
-        .hero,
-        .section {
-          padding: 22px;
-        }
+        .nav-links a:not(.btn-gh) { display: none; }
+        .container { width: calc(100% - 32px); }
+        section { padding: 56px 0; }
+        .terminal-body { font-size: 0.78rem; }
       }
     </style>
   </head>
   <body>
+    <div class="bg-glow"></div>
+    <div class="noise"></div>
+
+    <!-- Nav -->
+    <nav>
+      <div class="container">
+        <a class="nav-brand" href="#">
+          <span class="nav-icon">&#9889;</span>
+          Fast Mission Control
+        </a>
+        <div class="nav-links">
+          <a href="#problem">Problem</a>
+          <a href="#features">Features</a>
+          <a href="#faq">FAQ</a>
+          <a
+            class="btn-gh"
+            href="https://github.com/tomeraviv/FastMissionControl"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+            GitHub
+          </a>
+        </div>
+      </div>
+    </nav>
+
     <main>
-      <section class="hero">
-        <div class="eyebrow">Open source macOS Mission Control replacement</div>
-        <h1>Mission Control is too slow.</h1>
-        <p class="lede">
-          Fast Mission Control is a lightweight overview built to fix Apple's laggy and slow Mission Control,
-          especially on 4K+ monitors, 5K displays, ultrawide screens, and multi-monitor setups where the stock
-          animation often feels heavy.
-        </p>
+      <!-- Hero -->
+      <div class="container">
+        <section class="hero" id="top">
+          <div class="badge">
+            <span class="badge-dot"></span>
+            Open-source &middot; macOS native &middot; SwiftUI
+          </div>
+          <h1>Mission Control, without the lag.</h1>
+          <p class="hero-sub">
+            A free, open-source replacement for Apple's sluggish Mission Control.
+            Built for 4K displays, ultrawides, and multi-monitor setups where the
+            stock experience feels unbearable.
+          </p>
+          <div class="hero-actions">
+            <a
+              class="btn-primary"
+              href="https://github.com/tomeraviv/FastMissionControl"
+              target="_blank"
+              rel="noopener"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              View on GitHub
+            </a>
+            <a class="btn-secondary" href="#problem">Learn more &darr;</a>
+          </div>
 
-        <div class="hero-grid">
-          <article class="hero-card">
-            <strong>If you found this from Google or Reddit</strong>
-            <pre class="command"><code>defaults write com.apple.dock expose-animation-duration -float 0.1</code></pre>
-            <p class="note">
-              People still share that command when answering questions like "How to speed up animations on macOS"
-              and "Speed up Mission Control animations in macOS". On current macOS versions, that old Dock tweak
-              no longer fixes the real Mission Control slowdown that many users still hit every day.
-            </p>
-          </article>
+          <!-- Terminal -->
+          <div class="terminal-wrapper">
+            <div class="terminal">
+              <div class="terminal-bar">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title">Terminal &mdash; bash</span>
+                <span style="width: 36px;"></span>
+              </div>
+              <div class="terminal-body">
+                <p class="terminal-comment"># The "fix" everyone still shares on Reddit &amp; StackOverflow:</p>
+                <p class="terminal-cmd terminal-strike"><span class="prompt">$ </span>defaults write com.apple.dock expose-animation-duration -float 0.1</p>
+                <br />
+                <p class="terminal-note"># ^ This no longer works on modern macOS.</p>
+                <br />
+                <p class="terminal-comment"># The actual fix:</p>
+                <p class="terminal-cmd"><span class="prompt">$ </span><span class="terminal-highlight">git clone https://github.com/tomeraviv/FastMissionControl</span></p>
+                <p class="terminal-cmd"><span class="prompt">$ </span><span class="terminal-highlight">open FastMissionControl.xcodeproj</span></p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
 
-          <article class="hero-card">
-            <span class="metric">What this project does instead</span>
-            <p class="note">
-              Fast Mission Control opens its own fast overview, keeps windows grouped by display, renders previews,
-              and makes window selection feel immediate instead of waiting on Apple's built-in Mission Control
-              animation path.
-            </p>
-            <ul>
-              <li>Built for high-resolution and multi-display Macs</li>
-              <li>Open source and easy to inspect in Xcode</li>
-              <li>Focused on practical speed, not old terminal myths</li>
-            </ul>
-          </article>
-        </div>
-      </section>
+      <!-- Problem -->
+      <div class="divider"></div>
+      <div class="container">
+        <section id="problem" class="fade-up">
+          <span class="section-label">The Problem</span>
+          <h2>Mission Control hasn't kept up.</h2>
+          <p class="section-desc">
+            Apple's Mission Control was designed for single-display laptops. Today's setups have outgrown it, and
+            the experience is painful for power users.
+          </p>
 
-      <section class="section">
-        <h2>What Fast Mission Control can do right now</h2>
-        <div class="cards">
-          <article class="card">
-            <span class="metric">Fast overview</span>
-            <p>
-              Opens a custom Mission Control-style overview with tuned animation timings instead of relying on the
-              laggy default experience.
-            </p>
-          </article>
-          <article class="card">
-            <span class="metric">Multi-monitor aware</span>
-            <p>
-              Preserves per-display layout so stacked or clustered windows still spread out across the right
-              monitor.
-            </p>
-          </article>
-          <article class="card">
-            <span class="metric">Window previews</span>
-            <p>
-              Uses cached still previews and live previews so the overview stays readable when a lot of windows are
-              open.
-            </p>
-          </article>
-        </div>
-      </section>
+          <div class="problem-grid">
+            <div class="problem-card">
+              <div class="icon red-icon">&#128034;</div>
+              <h3>Laggy animations on high-res displays</h3>
+              <p>
+                4K, 5K, and ultrawide monitors push millions more pixels. Mission Control's compositor
+                struggles to keep up, causing visible stuttering and dropped frames during the overview animation.
+              </p>
+            </div>
+            <div class="problem-card">
+              <div class="icon red-icon">&#128187;</div>
+              <h3>Multi-monitor chaos</h3>
+              <p>
+                With two or more displays (especially at mixed resolutions or refresh rates), Mission Control's
+                animations become noticeably slower and windows can feel disorganized.
+              </p>
+            </div>
+            <div class="problem-card">
+              <div class="icon red-icon">&#128683;</div>
+              <h3>The old terminal fix is dead</h3>
+              <p>
+                Blog posts and Reddit threads still recommend <code>defaults write com.apple.dock expose-animation-duration</code>.
+                On current macOS versions, this Dock tweak no longer affects Mission Control's actual slowdown.
+              </p>
+            </div>
+            <div class="problem-card">
+              <div class="icon red-icon">&#128248;</div>
+              <h3>WindowServer bottleneck</h3>
+              <p>
+                Every Space and virtual desktop consumes resources. With many windows open, the macOS WindowServer process
+                itself becomes the bottleneck, and there's nothing users can do from System Settings.
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
 
-      <section class="section">
-        <h2>FAQ for searchers</h2>
-        <div class="faq">
-          <article class="faq-item">
-            <span class="metric">How to speed up animations on macOS?</span>
-            <p>
-              If your real pain point is Mission Control, the old Dock defaults commands are outdated advice. Fast
-              Mission Control exists specifically to speed up the Mission Control experience itself.
-            </p>
-          </article>
-          <article class="faq-item">
-            <span class="metric">Speed up Mission Control animations in macOS</span>
-            <p>
-              That search usually lands on stale blog posts and Reddit comments. This project is the modern,
-              open-source alternative for users who still see Mission Control lag on current macOS builds.
-            </p>
-          </article>
-          <article class="faq-item">
-            <span class="metric">Who is this for?</span>
-            <p>
-              Mac users with large displays, 4K+ monitors, multiple monitors, heavy multitasking workflows, and
-              too many windows open at once.
-            </p>
-          </article>
-          <article class="faq-item">
-            <span class="metric">What permissions does it need?</span>
-            <p>
-              Screen Recording and Accessibility. Those are required so the app can read window state, show
-              previews, and switch to the right window instantly.
-            </p>
-          </article>
-        </div>
-      </section>
+      <!-- Comparison -->
+      <div class="divider"></div>
+      <div class="container">
+        <section class="fade-up">
+          <span class="section-label">Before & After</span>
+          <h2>A side-by-side look.</h2>
 
-      <section class="section">
-        <h2>Still missing</h2>
-        <div class="checklist">
-          <article class="checklist-item">
-            <span class="metric">Planned feature</span>
-            <p>Global keyboard shortcuts and hotkeys, not just the extra mouse-button trigger.</p>
-          </article>
-          <article class="checklist-item">
-            <span class="metric">Planned feature</span>
-            <p>Moving real windows between displays or spaces from the overview.</p>
-          </article>
-          <article class="checklist-item">
-            <span class="metric">Planned feature</span>
-            <p>Dragging that repositions actual windows, not only the overview thumbnails.</p>
-          </article>
-          <article class="checklist-item">
-            <span class="metric">Planned feature</span>
-            <p>Better onboarding, signed builds, notarization, and broader automated test coverage.</p>
-          </article>
-        </div>
-        <div class="footer">
-          Fast Mission Control is an open-source project. Publish this site with GitHub Pages from the
-          <code>docs/</code> folder.
-        </div>
-      </section>
+          <div class="comparison">
+            <div class="compare-col before">
+              <span class="compare-tag">Stock Mission Control</span>
+              <h3>What you're dealing with</h3>
+              <ul class="compare-list">
+                <li><span class="icon-sm">&#10005;</span> Slow, heavy animation on 4K+ displays</li>
+                <li><span class="icon-sm">&#10005;</span> Laggy transitions with 10+ windows</li>
+                <li><span class="icon-sm">&#10005;</span> Multi-monitor layout feels broken</li>
+                <li><span class="icon-sm">&#10005;</span> No way to customize trigger or speed</li>
+                <li><span class="icon-sm">&#10005;</span> Terminal tweaks no longer help</li>
+              </ul>
+            </div>
+            <div class="compare-col after">
+              <span class="compare-tag">Fast Mission Control</span>
+              <h3>What you get instead</h3>
+              <ul class="compare-list">
+                <li><span class="icon-sm">&#10003;</span> Overview opens in under 30ms</li>
+                <li><span class="icon-sm">&#10003;</span> Smooth at any window count</li>
+                <li><span class="icon-sm">&#10003;</span> Proper per-display layout preservation</li>
+                <li><span class="icon-sm">&#10003;</span> Trigger via extra mouse button</li>
+                <li><span class="icon-sm">&#10003;</span> Open source, inspectable, hackable</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Features -->
+      <div class="divider"></div>
+      <div class="container">
+        <section id="features" class="fade-up">
+          <span class="section-label">Features</span>
+          <h2>Built for speed, not flash.</h2>
+          <p class="section-desc">
+            Every design decision optimizes for one thing: getting out of your way as fast as possible.
+          </p>
+
+          <div class="features-grid">
+            <div class="feature-card">
+              <div class="feature-icon">&#9889;</div>
+              <h3>Instant overview</h3>
+              <p>
+                Opens a custom Mission Control overlay with tuned animations. Target open time is 15&ndash;30ms &mdash; well
+                within a single frame.
+              </p>
+            </div>
+            <div class="feature-card">
+              <div class="feature-icon">&#128421;</div>
+              <h3>Multi-monitor aware</h3>
+              <p>
+                Windows stay grouped by their actual display. Stacked or clustered windows spread
+                correctly across the right monitor.
+              </p>
+            </div>
+            <div class="feature-card">
+              <div class="feature-icon">&#127912;</div>
+              <h3>Live & cached previews</h3>
+              <p>
+                Still previews load from cache for instant display. Live previews stream in for
+                active windows so the overview stays readable.
+              </p>
+            </div>
+            <div class="feature-card">
+              <div class="feature-icon">&#128065;</div>
+              <h3>Show Desktop</h3>
+              <p>
+                Quickly hide all visible windows to access your desktop, with an app shelf
+                showing minimized and hidden applications.
+              </p>
+            </div>
+            <div class="feature-card">
+              <div class="feature-icon">&#128433;</div>
+              <h3>Mouse button trigger</h3>
+              <p>
+                Toggle the overview with an extra mouse button (button 3+). No keyboard shortcut
+                needed &mdash; just click and pick.
+              </p>
+            </div>
+            <div class="feature-card">
+              <div class="feature-icon">&#128275;</div>
+              <h3>Fully open source</h3>
+              <p>
+                MIT-licensed Swift project. Read every line, build it yourself in Xcode, and
+                contribute improvements back.
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- FAQ -->
+      <div class="divider"></div>
+      <div class="container">
+        <section id="faq" class="fade-up">
+          <span class="section-label">FAQ</span>
+          <h2>Common questions.</h2>
+
+          <div class="faq-grid">
+            <div class="faq-card">
+              <h3>How do I speed up Mission Control on macOS?</h3>
+              <p>
+                If you came here from Google or Reddit: the old <code>defaults write com.apple.dock
+                expose-animation-duration</code> command is outdated and no longer fixes the real slowdown.
+                Fast Mission Control replaces the entire experience with something faster.
+              </p>
+            </div>
+            <div class="faq-card">
+              <h3>Why is Mission Control so laggy on my 4K monitor?</h3>
+              <p>
+                Apple's Mission Control compositor struggles with high-resolution displays. The more pixels
+                it has to composite (4K, 5K, ultrawide), the worse the animation performance gets &mdash; especially
+                with many open windows.
+              </p>
+            </div>
+            <div class="faq-card">
+              <h3>Who is this for?</h3>
+              <p>
+                Mac power users with high-resolution displays, multiple monitors, heavy multitasking workflows,
+                and too many windows open at once. If Mission Control feels sluggish to you, this is your fix.
+              </p>
+            </div>
+            <div class="faq-card">
+              <h3>What permissions does it need?</h3>
+              <p>
+                Screen Recording (to capture window previews) and Accessibility (to read window state and
+                switch windows). Both are standard macOS permissions for window management apps.
+              </p>
+            </div>
+            <div class="faq-card">
+              <h3>How do I build it?</h3>
+              <p>
+                Clone the repo, open <code>FastMissionControl.xcodeproj</code> in Xcode, and run the
+                <code>FastMissionControl</code> scheme. Tests can also be run from the CLI.
+              </p>
+            </div>
+            <div class="faq-card">
+              <h3>Is there a pre-built download?</h3>
+              <p>
+                Not yet. The project is in open-source alpha. Signed, notarized builds are on the roadmap.
+                For now, building from source in Xcode takes about a minute.
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Roadmap -->
+      <div class="divider"></div>
+      <div class="container">
+        <section class="fade-up">
+          <span class="section-label">Roadmap</span>
+          <h2>What's next.</h2>
+          <p class="section-desc">
+            Fast Mission Control is an active project. Here's what's planned.
+          </p>
+
+          <div class="roadmap-grid">
+            <div class="roadmap-item">
+              <div class="roadmap-icon">&#9000;</div>
+              <div>
+                <h4>Global keyboard shortcuts</h4>
+                <p>Trigger the overview with customizable hotkeys, not just mouse buttons.</p>
+              </div>
+            </div>
+            <div class="roadmap-item">
+              <div class="roadmap-icon">&#8644;</div>
+              <div>
+                <h4>Cross-display window moving</h4>
+                <p>Drag windows between displays or Spaces directly from the overview.</p>
+              </div>
+            </div>
+            <div class="roadmap-item">
+              <div class="roadmap-icon">&#9997;</div>
+              <div>
+                <h4>Real window dragging</h4>
+                <p>Repositioning thumbnails will move the actual windows, not just the previews.</p>
+              </div>
+            </div>
+            <div class="roadmap-item">
+              <div class="roadmap-icon">&#128230;</div>
+              <div>
+                <h4>Signed & notarized builds</h4>
+                <p>Pre-built downloads with proper code signing and macOS notarization.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- CTA -->
+      <div class="container">
+        <section class="cta-section">
+          <div class="cta-box fade-up">
+            <h2>Ready to ditch the lag?</h2>
+            <p>
+              Fast Mission Control is free, open source, and takes a minute to build.
+              Star the repo, try it out, and help make it better.
+            </p>
+            <div class="hero-actions">
+              <a
+                class="btn-primary"
+                href="https://github.com/tomeraviv/FastMissionControl"
+                target="_blank"
+                rel="noopener"
+              >
+                Get started on GitHub &rarr;
+              </a>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
+
+    <!-- Footer -->
+    <footer>
+      <div class="container">
+        <p>Fast Mission Control &middot; MIT License</p>
+        <a
+          href="https://github.com/tomeraviv/FastMissionControl"
+          target="_blank"
+          rel="noopener"
+        >
+          github.com/tomeraviv/FastMissionControl
+        </a>
+      </div>
+    </footer>
+
+    <!-- Scroll reveal -->
+    <script>
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              e.target.classList.add("visible");
+              observer.unobserve(e.target);
+            }
+          });
+        },
+        { threshold: 0.12 }
+      );
+      document.querySelectorAll(".fade-up").forEach((el) => observer.observe(el));
+    </script>
   </body>
 </html>
-

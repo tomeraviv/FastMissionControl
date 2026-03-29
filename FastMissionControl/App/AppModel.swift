@@ -671,6 +671,8 @@ final class AppModel: ObservableObject {
         let dismissStartNanoseconds = DispatchTime.now().uptimeNanoseconds
 
         let cancelPreviewWorkDuration = measureMilliseconds {
+            resumePreviewUpdatesTask?.cancel()
+            resumePreviewUpdatesTask = nil
             startLivePreviewsTask?.cancel()
             startLivePreviewsTask = nil
             startStillPreviewLoadingTask?.cancel()
