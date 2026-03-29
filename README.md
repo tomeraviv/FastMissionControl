@@ -28,6 +28,11 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 ## Still Missing
 
 - [ ] Global keyboard shortcuts / hotkeys
+- [ ] Add Metal rendering for faster perfornamce
+- [ ] Add demo video
+- [ ] Clean up main interface
+- [ ] Fix missing cache on first open
+- [ ] Fix slow settings form ui
 - [ ] Moving real windows between displays or spaces from the overview
 - [ ] Dragging that repositions actual windows, not just overview thumbnails
 - [ ] Better first-run onboarding for Screen Recording and Accessibility permissions
