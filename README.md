@@ -10,6 +10,8 @@ defaults write com.apple.dock expose-animation-duration -float 0.1
 
 does not fix the problem on current macOS versions. This project exists because people still get sent to outdated Dock commands every day even though Mission Control is still slow for many setups.
 
+https://tomeraviv.github.io/FastMissionControl/
+
 ## What It Does
 
 - Opens a fast custom Mission Control-style overview.
