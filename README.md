@@ -19,7 +19,6 @@ https://tomeraviv.github.io/FastMissionControl/
 - Shows the **Full Window Title, Name and Icon** without having to mouse over.
 - Shows still and low-FPS live previews for windows.
 - Includes a desktop action and app shelf behavior.
-- Uses an extra mouse button trigger by default.
 - Fixes decade old known Misson Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
 
 ## Status
