@@ -14,9 +14,10 @@ https://tomeraviv.github.io/FastMissionControl/
 
 ## What It Does
 
-- Opens a fast custom Mission Control-style overview **that does not stutter**.
+- Opens a fast custom Mission Control-style overview **that Does Not Stutter**.
 - Has better window selector layout than Misson Control.
-- Shows still and live previews for windows.
+- Shows the **Full Window Title, Name and Icon** without having to mouse over,
+- Shows still and low-FPS live previews for windows.
 - Includes a desktop action and app shelf behavior.
 - Uses an extra mouse button trigger by default.
 - Fixes decade old known Misson Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
@@ -31,8 +32,8 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 - [ ] Add Metal rendering for faster perfornamce
 - [ ] Add demo video
 - [ ] Clean up main interface
-- [ ] Fix missing cache on first open
-- [ ] Fix slow settings form ui
+- [ ] Fix missing preview cache on first open & fast re-opens
+- [ ] Fix slow settings form UI
 - [ ] Moving real windows between displays or spaces from the overview
 - [ ] Dragging that repositions actual windows, not just overview thumbnails
 - [ ] Better first-run onboarding for Screen Recording and Accessibility permissions
