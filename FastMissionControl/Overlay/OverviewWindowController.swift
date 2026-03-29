@@ -169,9 +169,11 @@ final class OverviewWindowController {
             onMouseMoving(true)
         }
         mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            self.isMouseMoving = false
-            self.onMouseMoving(false)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isMouseMoving = false
+                self.onMouseMoving(false)
+            }
         }
     }
 

@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fast Mission Control | Speed up Mission Control animations in macOS</title>
+    <meta
+      name="description"
+      content="Fast Mission Control is an open-source fix for laggy and slow Mission Control on macOS, especially on 4K+ monitors and multi-monitor setups. The old defaults write com.apple.dock expose-animation-duration command no longer works for current macOS users."
+    />
+    <meta
+      name="keywords"
+      content="How to speed up animations on macOS, Speed up Mission Control animations in macOS, Mission Control laggy, Mission Control slow, 4K monitor Mission Control, multi-monitor Mission Control, defaults write com.apple.dock expose-animation-duration -float 0.1, reddit"
+    />
+    <meta property="og:title" content="Fast Mission Control" />
+    <meta
+      property="og:description"
+      content="An open-source fix for laggy Mission Control on macOS."
+    />
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;700&display=swap");
+
+      :root {
+        --bg: #f4efe5;
+        --bg-accent: #dfe9dc;
+        --ink: #0f1720;
+        --muted: #425161;
+        --line: rgba(15, 23, 32, 0.12);
+        --panel: rgba(255, 251, 245, 0.82);
+        --panel-strong: #fff9f1;
+        --accent: #ad3f1e;
+        --accent-soft: #f1c8aa;
+        --shadow: 0 24px 60px rgba(34, 42, 52, 0.12);
+        --radius: 24px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(173, 63, 30, 0.15), transparent 34%),
+          radial-gradient(circle at top right, rgba(68, 98, 76, 0.18), transparent 32%),
+          linear-gradient(180deg, var(--bg) 0%, #fbf7f1 42%, #f6f1e9 100%);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(15, 23, 32, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 23, 32, 0.03) 1px, transparent 1px);
+        background-size: 32px 32px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent 82%);
+        pointer-events: none;
+      }
+
+      main {
+        position: relative;
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 32px 0 56px;
+      }
+
+      .hero,
+      .section {
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+
+      .hero {
+        padding: 28px;
+        overflow: hidden;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(255, 249, 241, 0.92);
+        border: 1px solid rgba(173, 63, 30, 0.18);
+        color: var(--accent);
+        font-size: 0.84rem;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        line-height: 0.95;
+      }
+
+      h1 {
+        max-width: 10ch;
+        margin-top: 18px;
+        font-family: "Instrument Serif", Georgia, serif;
+        font-size: clamp(3.2rem, 8vw, 6.6rem);
+        font-weight: 400;
+      }
+
+      h2 {
+        font-size: clamp(1.55rem, 3vw, 2.2rem);
+      }
+
+      .lede {
+        max-width: 58rem;
+        margin-top: 18px;
+        font-size: clamp(1.05rem, 2vw, 1.32rem);
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .hero-grid,
+      .cards,
+      .faq,
+      .checklist {
+        display: grid;
+        gap: 16px;
+      }
+
+      .hero-grid {
+        grid-template-columns: 1.35fr 0.95fr;
+        margin-top: 28px;
+      }
+
+      .hero-card,
+      .card,
+      .faq-item,
+      .checklist-item {
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+      }
+
+      .hero-card {
+        padding: 20px;
+      }
+
+      .hero-card strong,
+      .metric {
+        display: block;
+        margin-bottom: 10px;
+        color: var(--accent);
+        font-size: 0.82rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .command {
+        margin: 0;
+        padding: 18px;
+        overflow-x: auto;
+        border-radius: 18px;
+        background: #11161c;
+        color: #f9f2e7;
+        font-size: 0.96rem;
+        line-height: 1.55;
+      }
+
+      .note {
+        margin-top: 14px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .section {
+        margin-top: 18px;
+        padding: 26px;
+      }
+
+      .cards {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 18px;
+      }
+
+      .card,
+      .faq-item,
+      .checklist-item {
+        padding: 20px;
+      }
+
+      .card p,
+      .faq-item p,
+      .checklist-item p {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.65;
+      }
+
+      .faq,
+      .checklist {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 18px;
+      }
+
+      ul {
+        margin: 18px 0 0;
+        padding-left: 1.1rem;
+        color: var(--muted);
+        line-height: 1.8;
+      }
+
+      code {
+        font-family: "SFMono-Regular", "SF Mono", "Menlo", monospace;
+        font-size: 0.95em;
+      }
+
+      .footer {
+        margin-top: 18px;
+        padding: 18px 22px 0;
+        color: var(--muted);
+        font-size: 0.96rem;
+      }
+
+      @media (max-width: 900px) {
+        .hero-grid,
+        .cards,
+        .faq,
+        .checklist {
+          grid-template-columns: 1fr;
+        }
+
+        .hero,
+        .section {
+          padding: 22px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Open source macOS Mission Control replacement</div>
+        <h1>Mission Control is too slow.</h1>
+        <p class="lede">
+          Fast Mission Control is a lightweight overview built to fix Apple's laggy and slow Mission Control,
+          especially on 4K+ monitors, 5K displays, ultrawide screens, and multi-monitor setups where the stock
+          animation often feels heavy.
+        </p>
+
+        <div class="hero-grid">
+          <article class="hero-card">
+            <strong>If you found this from Google or Reddit</strong>
+            <pre class="command"><code>defaults write com.apple.dock expose-animation-duration -float 0.1</code></pre>
+            <p class="note">
+              People still share that command when answering questions like "How to speed up animations on macOS"
+              and "Speed up Mission Control animations in macOS". On current macOS versions, that old Dock tweak
+              no longer fixes the real Mission Control slowdown that many users still hit every day.
+            </p>
+          </article>
+
+          <article class="hero-card">
+            <span class="metric">What this project does instead</span>
+            <p class="note">
+              Fast Mission Control opens its own fast overview, keeps windows grouped by display, renders previews,
+              and makes window selection feel immediate instead of waiting on Apple's built-in Mission Control
+              animation path.
+            </p>
+            <ul>
+              <li>Built for high-resolution and multi-display Macs</li>
+              <li>Open source and easy to inspect in Xcode</li>
+              <li>Focused on practical speed, not old terminal myths</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>What Fast Mission Control can do right now</h2>
+        <div class="cards">
+          <article class="card">
+            <span class="metric">Fast overview</span>
+            <p>
+              Opens a custom Mission Control-style overview with tuned animation timings instead of relying on the
+              laggy default experience.
+            </p>
+          </article>
+          <article class="card">
+            <span class="metric">Multi-monitor aware</span>
+            <p>
+              Preserves per-display layout so stacked or clustered windows still spread out across the right
+              monitor.
+            </p>
+          </article>
+          <article class="card">
+            <span class="metric">Window previews</span>
+            <p>
+              Uses cached still previews and live previews so the overview stays readable when a lot of windows are
+              open.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>FAQ for searchers</h2>
+        <div class="faq">
+          <article class="faq-item">
+            <span class="metric">How to speed up animations on macOS?</span>
+            <p>
+              If your real pain point is Mission Control, the old Dock defaults commands are outdated advice. Fast
+              Mission Control exists specifically to speed up the Mission Control experience itself.
+            </p>
+          </article>
+          <article class="faq-item">
+            <span class="metric">Speed up Mission Control animations in macOS</span>
+            <p>
+              That search usually lands on stale blog posts and Reddit comments. This project is the modern,
+              open-source alternative for users who still see Mission Control lag on current macOS builds.
+            </p>
+          </article>
+          <article class="faq-item">
+            <span class="metric">Who is this for?</span>
+            <p>
+              Mac users with large displays, 4K+ monitors, multiple monitors, heavy multitasking workflows, and
+              too many windows open at once.
+            </p>
+          </article>
+          <article class="faq-item">
+            <span class="metric">What permissions does it need?</span>
+            <p>
+              Screen Recording and Accessibility. Those are required so the app can read window state, show
+              previews, and switch to the right window instantly.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Still missing</h2>
+        <div class="checklist">
+          <article class="checklist-item">
+            <span class="metric">Planned feature</span>
+            <p>Global keyboard shortcuts and hotkeys, not just the extra mouse-button trigger.</p>
+          </article>
+          <article class="checklist-item">
+            <span class="metric">Planned feature</span>
+            <p>Moving real windows between displays or spaces from the overview.</p>
+          </article>
+          <article class="checklist-item">
+            <span class="metric">Planned feature</span>
+            <p>Dragging that repositions actual windows, not only the overview thumbnails.</p>
+          </article>
+          <article class="checklist-item">
+            <span class="metric">Planned feature</span>
+            <p>Better onboarding, signed builds, notarization, and broader automated test coverage.</p>
+          </article>
+        </div>
+        <div class="footer">
+          Fast Mission Control is an open-source project. Publish this site with GitHub Pages from the
+          <code>docs/</code> folder.
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
+

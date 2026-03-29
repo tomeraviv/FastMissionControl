@@ -1,0 +1,20 @@
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+
+# Build products
+DerivedData/
+build/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Archives and diagnostics
+*.xcarchive
+*.xccrashpoint
+*.xcresult
+

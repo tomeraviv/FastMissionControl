@@ -12,6 +12,7 @@ import AppKit
 struct FastMissionControlTests {
 
     @Test func secondaryDisplayClusteredWindowsSpreadAcrossColumns() {
+        let settings = makeIsolatedSettings(testName: #function)
         let primaryDisplay = DisplayOverview(
             id: 1,
             localFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
@@ -53,7 +54,7 @@ struct FastMissionControlTests {
             livePreviewLimit: 8
         )
 
-        SpatialOverviewLayout().apply(to: snapshot)
+        SpatialOverviewLayout(settings: settings).apply(to: snapshot)
 
         let centerXs = windows.map(\.targetFrame.midX)
         let spanX = (centerXs.max() ?? 0) - (centerXs.min() ?? 0)
@@ -64,6 +65,7 @@ struct FastMissionControlTests {
     }
 
     @Test func clusteredLargeWindowsFillMostOfOverviewSpace() {
+        let settings = makeIsolatedSettings(testName: #function)
         let display = DisplayOverview(
             id: 1,
             localFrame: CGRect(x: 0, y: 0, width: 1728, height: 1117),
@@ -99,7 +101,7 @@ struct FastMissionControlTests {
             livePreviewLimit: 10
         )
 
-        SpatialOverviewLayout().apply(to: snapshot)
+        SpatialOverviewLayout(settings: settings).apply(to: snapshot)
 
         let union = windows.reduce(CGRect.null) { partial, window in
             partial.union(window.targetFrame)
@@ -119,4 +121,15 @@ struct FastMissionControlTests {
         #expect(verticalFill > 0.82)
     }
 
+}
+
+private func makeIsolatedSettings(testName: String) -> AppSettings {
+    let suiteName = "FastMissionControlTests.\(testName)"
+    guard let defaults = UserDefaults(suiteName: suiteName) else {
+        Issue.record("Failed to create isolated UserDefaults suite for \(testName)")
+        return AppSettings()
+    }
+
+    defaults.removePersistentDomain(forName: suiteName)
+    return AppSettings(defaults: defaults)
 }

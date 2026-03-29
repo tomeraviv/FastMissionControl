@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Run unit tests
+        run: xcodebuild test -project FastMissionControl.xcodeproj -scheme FastMissionControl -configuration Debug -destination 'platform=macOS' -only-testing:FastMissionControlTests CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify release build
+        run: xcodebuild build -project FastMissionControl.xcodeproj -scheme FastMissionControl -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+

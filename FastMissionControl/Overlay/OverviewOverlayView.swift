@@ -474,7 +474,9 @@ final class OverviewDisplayView: NSView {
 
         if opaque, isExpanded {
             mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
-                self?.setWallpaperOpaque(false)
+                Task { @MainActor [weak self] in
+                    self?.setWallpaperOpaque(false)
+                }
             }
         }
     }

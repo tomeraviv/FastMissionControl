@@ -204,7 +204,7 @@ final class AppModel: ObservableObject {
         // (needed for preview captures, not needed for display).
         Task { [weak self] in
             await self?.inventoryService.resolveShareableWindows(for: snapshot)
-            await self?.previewController.shareableWindowsDidResolve()
+            self?.previewController.shareableWindowsDidResolve()
         }
 
         resumePreviewUpdatesTask?.cancel()
@@ -251,8 +251,9 @@ final class AppModel: ObservableObject {
     private func startLiveRefresh() {
         stopLiveRefresh()
         liveRefreshTimer = Timer.scheduledTimer(withTimeInterval: settings.liveRefreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.pollWindowChanges()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pollWindowChanges()
             }
         }
     }
@@ -444,7 +445,7 @@ final class AppModel: ObservableObject {
             await inventoryService.resolveShareableWindows(for: snapshot)
             guard !Task.isCancelled, !isOverviewVisible else { return }
 
-            await previewController.prewarm(snapshot: snapshot, forceRefresh: false)
+            await previewController.prewarm(snapshot: snapshot, forceRefresh: true)
         } catch {
             // Ignore — cache misses are not fatal.
         }
