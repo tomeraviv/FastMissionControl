@@ -57,6 +57,14 @@ The app needs:
 - Screen Recording
 - Accessibility
 
+## License
+
+MIT
+
+## Donate ❤️
+
+https://buymeacoffee.com/tomer789
+
 ## GitHub Pages
 
 A simple project site lives in `docs/`. After publishing the repo, enable GitHub Pages and point it at the `docs/` folder on your default branch.
