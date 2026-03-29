@@ -16,7 +16,7 @@ https://tomeraviv.github.io/FastMissionControl/
 
 - Opens a fast custom Mission Control-style overview **that Does Not Stutter**.
 - Has better window selector layout than Misson Control.
-- Shows the **Full Window Title, Name and Icon** without having to mouse over,
+- Shows the **Full Window Title, Name and Icon** without having to mouse over.
 - Shows still and low-FPS live previews for windows.
 - Includes a desktop action and app shelf behavior.
 - Uses an extra mouse button trigger by default.
