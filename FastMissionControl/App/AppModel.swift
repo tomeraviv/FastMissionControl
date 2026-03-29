@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 final class AppModel: ObservableObject {
     @Published private(set) var isOverviewVisible = false
     @Published private(set) var lastStatus = "Checking permissions…"
+    @Published private(set) var latestOverviewOpenMetrics = OverviewOpenMetricsReport.empty
 
     let settings: AppSettings
     let permissions = PermissionCoordinator()
@@ -30,12 +31,14 @@ final class AppModel: ObservableObject {
     private var resumePreviewUpdatesTask: Task<Void, Never>?
     private var startLivePreviewsTask: Task<Void, Never>?
     private var startStillPreviewLoadingTask: Task<Void, Never>?
+    private var preResolveAXHandlesTask: Task<Void, Never>?
     private var prewarmTask: Task<Void, Never>?
     private var liveRefreshTimer: Timer?
     private var openWindowIDs: Set<CGWindowID> = []
     private var goneWindowIDs: Set<CGWindowID> = []
     private var newWindowIDs: Set<CGWindowID> = []
     private var desktopHiddenPIDs: Set<pid_t> = []
+    private var latestOverviewOpenSessionID = UUID()
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -64,8 +67,12 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        triggerMonitor.onToggle = { [weak self] slowAnimation in
-            self?.toggleOverview(slowAnimation: slowAnimation)
+        triggerMonitor.onToggle = { [weak self] slowAnimation, eventTimestampNanoseconds in
+            self?.toggleOverview(
+                slowAnimation: slowAnimation,
+                triggerDescription: "Mouse hotkey",
+                hotkeyEventTimestampNanoseconds: eventTimestampNanoseconds
+            )
         }
 
         applySettings()
@@ -79,6 +86,8 @@ final class AppModel: ObservableObject {
         resumePreviewUpdatesTask = nil
         startStillPreviewLoadingTask?.cancel()
         startStillPreviewLoadingTask = nil
+        preResolveAXHandlesTask?.cancel()
+        preResolveAXHandlesTask = nil
         stopLiveRefresh()
         closeOverview()
         triggerMonitor.stop()
@@ -106,7 +115,11 @@ final class AppModel: ObservableObject {
 
     // MARK: - Toggle (always synchronous, always instant)
 
-    func toggleOverview(slowAnimation: Bool = NSEvent.modifierFlags.contains(.shift)) {
+    func toggleOverview(
+        slowAnimation: Bool = NSEvent.modifierFlags.contains(.shift),
+        triggerDescription: String = "Manual open",
+        hotkeyEventTimestampNanoseconds: UInt64? = nil
+    ) {
         if overviewController != nil {
             closeOverview()
             return
@@ -117,26 +130,66 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // Restore apps hidden by "Show Desktop" on the previous session.
-        restoreDesktopIfNeeded()
-
         // ── 100% synchronous open ─────────────────────────────────
         // CGWindowListCopyWindowInfo is sync (~5-15ms).
         // Layout computation is sync (~1ms).
         // Controller + layer tree build is sync (~5-10ms).
         // Total: ~15-30ms — well within one frame.
+        let sessionID = beginOverviewOpenMetrics(
+            triggerDescription: triggerDescription,
+            hotkeyEventTimestampNanoseconds: hotkeyEventTimestampNanoseconds
+        )
+
+        let synchronousOpenStartNanoseconds = DispatchTime.now().uptimeNanoseconds
+
         do {
+            let restoreDesktopDuration = measureMilliseconds {
+                restoreDesktopIfNeeded()
+            }
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Restore desktop apps",
+                milliseconds: restoreDesktopDuration
+            )
+
+            let snapshotStartNanoseconds = DispatchTime.now().uptimeNanoseconds
             let snapshot = try inventoryService.snapshotSync()
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Build window snapshot",
+                milliseconds: millisecondsSince(snapshotStartNanoseconds)
+            )
 
             guard !snapshot.windows.isEmpty || !snapshot.shelfItems.isEmpty else {
                 lastStatus = "No visible windows were found."
                 return
             }
 
-            layoutEngine.apply(to: snapshot)
-            previewController.applyCachedPreviews(to: snapshot)
+            let layoutDuration = measureMilliseconds {
+                layoutEngine.apply(to: snapshot)
+            }
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Compute overview layout",
+                milliseconds: layoutDuration
+            )
 
+            let applyCachedPreviewsDuration = measureMilliseconds {
+                previewController.applyCachedPreviews(to: snapshot)
+            }
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Apply cached previews",
+                milliseconds: applyCachedPreviewsDuration
+            )
+
+            let controllerStartNanoseconds = DispatchTime.now().uptimeNanoseconds
             let controller = makeOverviewController(snapshot: snapshot)
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Build overview controller",
+                milliseconds: millisecondsSince(controllerStartNanoseconds)
+            )
             let openAnimationDuration = slowAnimation
                 ? settings.slowOpenAnimationDuration
                 : settings.openAnimationDuration
@@ -147,7 +200,14 @@ final class AppModel: ObservableObject {
                 controller: controller,
                 snapshot: snapshot,
                 openAnimationDuration: openAnimationDuration,
-                openAnimationDurationNanoseconds: openAnimationDurationNanoseconds
+                openAnimationDurationNanoseconds: openAnimationDurationNanoseconds,
+                sessionID: sessionID
+            )
+
+            recordOverviewOpenTiming(
+                sessionID,
+                label: "Total synchronous open path",
+                milliseconds: millisecondsSince(synchronousOpenStartNanoseconds)
             )
         } catch {
             lastStatus = error.localizedDescription
@@ -164,12 +224,20 @@ final class AppModel: ObservableObject {
         controller: OverviewWindowController,
         snapshot: OverviewSnapshot,
         openAnimationDuration: CFTimeInterval,
-        openAnimationDurationNanoseconds: UInt64
+        openAnimationDurationNanoseconds: UInt64,
+        sessionID: UUID
     ) {
         prewarmTask?.cancel()
         prewarmTask = nil
 
-        previewController.prepare(snapshot: snapshot, startStillLoading: false)
+        let preparePreviewControllerDuration = measureMilliseconds {
+            previewController.prepare(snapshot: snapshot, startStillLoading: false)
+        }
+        recordOverviewOpenTiming(
+            sessionID,
+            label: "Prepare preview controller",
+            milliseconds: preparePreviewControllerDuration
+        )
 
         currentSnapshot = snapshot
         overviewController = controller
@@ -183,11 +251,19 @@ final class AppModel: ObservableObject {
 
         previewController.setPreviewUpdatesSuspended(true)
         controller.setPreviewUpdatesSuspended(true)
-        controller.show(duration: openAnimationDuration)
+        let showOverlayDuration = measureMilliseconds {
+            controller.show(duration: openAnimationDuration)
+        }
+        recordOverviewOpenTiming(
+            sessionID,
+            label: "Show overlay panels",
+            milliseconds: showOverlayDuration
+        )
         schedulePostShowWork(
             controller: controller,
             snapshot: snapshot,
-            openAnimationDurationNanoseconds: openAnimationDurationNanoseconds
+            openAnimationDurationNanoseconds: openAnimationDurationNanoseconds,
+            sessionID: sessionID
         )
         startLiveRefresh()
     }
@@ -195,16 +271,43 @@ final class AppModel: ObservableObject {
     private func schedulePostShowWork(
         controller: OverviewWindowController,
         snapshot: OverviewSnapshot,
-        openAnimationDurationNanoseconds: UInt64
+        openAnimationDurationNanoseconds: UInt64,
+        sessionID: UUID
     ) {
+        preResolveAXHandlesTask?.cancel()
+        preResolveAXHandlesTask = nil
+
         // Pre-resolve AX handles so clicks raise the right window instantly.
-        activationService.preResolveAXHandles(for: snapshot)
+        preResolveAXHandlesTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: openAnimationDurationNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let preResolveAXHandlesDuration = self.measureMilliseconds {
+                self.activationService.preResolveAXHandles(for: snapshot)
+            }
+            self.recordOverviewOpenTiming(
+                sessionID,
+                label: "Pre-resolve AX handles",
+                milliseconds: preResolveAXHandlesDuration
+            )
+        }
 
         // Fire-and-forget: resolve SCWindow objects in background
         // (needed for preview captures, not needed for display).
         Task { [weak self] in
-            await self?.inventoryService.resolveShareableWindows(for: snapshot)
-            self?.previewController.shareableWindowsDidResolve()
+            guard let self else { return }
+            let resolveShareableWindowsStartNanoseconds = DispatchTime.now().uptimeNanoseconds
+            await self.inventoryService.resolveShareableWindows(for: snapshot)
+            self.recordOverviewOpenTiming(
+                sessionID,
+                label: "Resolve SCWindow objects",
+                milliseconds: self.millisecondsSince(resolveShareableWindowsStartNanoseconds)
+            )
+            self.previewController.shareableWindowsDidResolve()
         }
 
         resumePreviewUpdatesTask?.cancel()
@@ -229,7 +332,14 @@ final class AppModel: ObservableObject {
                 ))
             } catch { return }
             guard !Task.isCancelled else { return }
-            self.previewController.startStillPreviewLoading()
+            let startStillPreviewLoadingDuration = self.measureMilliseconds {
+                self.previewController.startStillPreviewLoading()
+            }
+            self.recordOverviewOpenTiming(
+                sessionID,
+                label: "Start still preview loading",
+                milliseconds: startStillPreviewLoadingDuration
+            )
         }
 
         startLivePreviewsTask?.cancel()
@@ -242,7 +352,14 @@ final class AppModel: ObservableObject {
                 ))
             } catch { return }
             guard !Task.isCancelled else { return }
-            self.previewController.startLivePreviews()
+            let startLivePreviewsDuration = self.measureMilliseconds {
+                self.previewController.startLivePreviews()
+            }
+            self.recordOverviewOpenTiming(
+                sessionID,
+                label: "Start live previews",
+                milliseconds: startLivePreviewsDuration
+            )
         }
     }
 
@@ -343,6 +460,8 @@ final class AppModel: ObservableObject {
                 self.startLivePreviewsTask = nil
                 self.startStillPreviewLoadingTask?.cancel()
                 self.startStillPreviewLoadingTask = nil
+                self.preResolveAXHandlesTask?.cancel()
+                self.preResolveAXHandlesTask = nil
                 self.stopLiveRefresh()
                 self.previewController.stopAll()
                 self.currentSnapshot = nil
@@ -464,6 +583,8 @@ final class AppModel: ObservableObject {
         resumePreviewUpdatesTask = nil
         startStillPreviewLoadingTask?.cancel()
         startStillPreviewLoadingTask = nil
+        preResolveAXHandlesTask?.cancel()
+        preResolveAXHandlesTask = nil
         stopLiveRefresh()
         previewController.stopAll()
 
@@ -496,6 +617,8 @@ final class AppModel: ObservableObject {
         startLivePreviewsTask = nil
         startStillPreviewLoadingTask?.cancel()
         startStillPreviewLoadingTask = nil
+        preResolveAXHandlesTask?.cancel()
+        preResolveAXHandlesTask = nil
         stopLiveRefresh()
         previewController.stopAll()
         controller.setPreviewUpdatesSuspended(true)
@@ -535,5 +658,70 @@ final class AppModel: ObservableObject {
         if isOverviewVisible {
             startLiveRefresh()
         }
+    }
+
+    private func beginOverviewOpenMetrics(
+        triggerDescription: String,
+        hotkeyEventTimestampNanoseconds: UInt64?
+    ) -> UUID {
+        let sessionID = UUID()
+        latestOverviewOpenSessionID = sessionID
+
+        var entries: [OverviewOpenTimingEntry] = []
+        if let hotkeyEventTimestampNanoseconds {
+            entries.append(
+                OverviewOpenTimingEntry(
+                    label: "Hotkey event tap -> main-thread toggle",
+                    milliseconds: millisecondsSince(hotkeyEventTimestampNanoseconds)
+                )
+            )
+        }
+
+        let stagedLabels = [
+            "Restore desktop apps",
+            "Build window snapshot",
+            "Compute overview layout",
+            "Apply cached previews",
+            "Build overview controller",
+            "Prepare preview controller",
+            "Show overlay panels",
+            "Pre-resolve AX handles",
+            "Resolve SCWindow objects",
+            "Start still preview loading",
+            "Start live previews",
+            "Total synchronous open path"
+        ]
+
+        for label in stagedLabels {
+            entries.append(OverviewOpenTimingEntry(label: label, milliseconds: nil))
+        }
+
+        latestOverviewOpenMetrics = OverviewOpenMetricsReport(
+            triggerDescription: triggerDescription,
+            entries: entries
+        )
+        return sessionID
+    }
+
+    private func recordOverviewOpenTiming(_ sessionID: UUID, label: String, milliseconds: Double) {
+        guard sessionID == latestOverviewOpenSessionID else { return }
+
+        if let index = latestOverviewOpenMetrics.entries.firstIndex(where: { $0.label == label }) {
+            latestOverviewOpenMetrics.entries[index].milliseconds = milliseconds
+        } else {
+            latestOverviewOpenMetrics.entries.append(
+                OverviewOpenTimingEntry(label: label, milliseconds: milliseconds)
+            )
+        }
+    }
+
+    private func measureMilliseconds(_ work: () -> Void) -> Double {
+        let startNanoseconds = DispatchTime.now().uptimeNanoseconds
+        work()
+        return millisecondsSince(startNanoseconds)
+    }
+
+    private func millisecondsSince(_ startNanoseconds: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - startNanoseconds) / 1_000_000
     }
 }

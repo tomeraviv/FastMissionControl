@@ -58,6 +58,30 @@ struct ContentView: View {
                             Text(model.lastStatus)
                                 .multilineTextAlignment(.trailing)
                         }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Latest Open Timings")
+                                Spacer()
+                                Text(model.latestOverviewOpenMetrics.triggerDescription)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if model.latestOverviewOpenMetrics.entries.isEmpty {
+                                Text("Open the overview to record timings.")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(model.latestOverviewOpenMetrics.entries) { entry in
+                                    LabeledContent(entry.label) {
+                                        Text(Self.formatTiming(entry.milliseconds))
+                                            .monospacedDigit()
+                                            .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
+                                    }
+                                }
+                            }
+                        }
                     }
                     .font(.system(size: 13))
                 } label: {
@@ -88,6 +112,14 @@ struct ContentView: View {
             .padding(24)
         }
         .frame(minWidth: 640, minHeight: 720)
+    }
+
+    private static func formatTiming(_ milliseconds: Double?) -> String {
+        guard let milliseconds else {
+            return "pending"
+        }
+
+        return String(format: "%.2f ms", milliseconds)
     }
 }
 

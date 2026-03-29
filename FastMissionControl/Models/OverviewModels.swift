@@ -141,3 +141,19 @@ enum OverviewPhase {
     case collapsed
     case expanded
 }
+
+struct OverviewOpenTimingEntry: Identifiable, Equatable {
+    let label: String
+    var milliseconds: Double?
+
+    var id: String {
+        label
+    }
+}
+
+struct OverviewOpenMetricsReport: Equatable {
+    let triggerDescription: String
+    var entries: [OverviewOpenTimingEntry]
+
+    static let empty = OverviewOpenMetricsReport(triggerDescription: "No overview opens recorded yet.", entries: [])
+}
