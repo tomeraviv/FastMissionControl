@@ -82,6 +82,30 @@ struct ContentView: View {
                                 }
                             }
                         }
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Latest Close Timings")
+                                Spacer()
+                                Text(model.latestOverviewCloseMetrics.triggerDescription)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if model.latestOverviewCloseMetrics.entries.isEmpty {
+                                Text("Close the overview to record timings.")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(model.latestOverviewCloseMetrics.entries) { entry in
+                                    LabeledContent(entry.label) {
+                                        Text(Self.formatTiming(entry.milliseconds))
+                                            .monospacedDigit()
+                                            .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
+                                    }
+                                }
+                            }
+                        }
                     }
                     .font(.system(size: 13))
                 } label: {

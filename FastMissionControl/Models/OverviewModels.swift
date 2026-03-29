@@ -157,3 +157,10 @@ struct OverviewOpenMetricsReport: Equatable {
 
     static let empty = OverviewOpenMetricsReport(triggerDescription: "No overview opens recorded yet.", entries: [])
 }
+
+struct OverviewCloseMetricsReport: Equatable {
+    let triggerDescription: String
+    var entries: [OverviewOpenTimingEntry]
+
+    static let empty = OverviewCloseMetricsReport(triggerDescription: "No overview closes recorded yet.", entries: [])
+}

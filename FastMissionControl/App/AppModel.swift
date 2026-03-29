@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isOverviewVisible = false
     @Published private(set) var lastStatus = "Checking permissions…"
     @Published private(set) var latestOverviewOpenMetrics = OverviewOpenMetricsReport.empty
+    @Published private(set) var latestOverviewCloseMetrics = OverviewCloseMetricsReport.empty
 
     let settings: AppSettings
     let permissions = PermissionCoordinator()
@@ -39,6 +40,7 @@ final class AppModel: ObservableObject {
     private var newWindowIDs: Set<CGWindowID> = []
     private var desktopHiddenPIDs: Set<pid_t> = []
     private var latestOverviewOpenSessionID = UUID()
+    private var latestOverviewCloseSessionID = UUID()
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -215,7 +217,7 @@ final class AppModel: ObservableObject {
     }
 
     func closeOverview() {
-        dismissOverviewImmediately()
+        dismissOverviewImmediately(triggerDescription: "Immediate close")
     }
 
     // MARK: - Show
@@ -432,7 +434,7 @@ final class AppModel: ObservableObject {
             app.hide()
         }
 
-        dismissOverviewImmediately()
+        dismissOverviewImmediately(triggerDescription: "Show desktop")
     }
 
     private func restoreDesktopIfNeeded() {
@@ -486,14 +488,31 @@ final class AppModel: ObservableObject {
                 let durationNanoseconds = slowAnimation
                     ? self.settings.slowSelectionAnimationDurationNanoseconds
                     : self.settings.selectionAnimationDurationNanoseconds
-                self.activationService.activateAppFast(pid: descriptor.pid)
+                let closeSessionID = self.beginOverviewCloseMetrics(triggerDescription: "Selected window")
+                let activateAppFastDuration = self.measureMilliseconds {
+                    self.activationService.activateAppFast(pid: descriptor.pid)
+                }
+                self.recordOverviewCloseTiming(
+                    closeSessionID,
+                    label: "Activate target app",
+                    milliseconds: activateAppFastDuration
+                )
                 self.dismissOverviewAnimated(
                     selectedWindowID: descriptor.id,
                     duration: duration,
-                    durationNanoseconds: durationNanoseconds
+                    durationNanoseconds: durationNanoseconds,
+                    sessionID: closeSessionID
                 )
                 Task { @MainActor [weak self] in
-                    self?.activationService.raiseSpecificWindow(descriptor: descriptor)
+                    guard let self else { return }
+                    let raiseSpecificWindowDuration = self.measureMilliseconds {
+                        self.activationService.raiseSpecificWindow(descriptor: descriptor)
+                    }
+                    self.recordOverviewCloseTiming(
+                        closeSessionID,
+                        label: "Raise specific window",
+                        milliseconds: raiseSpecificWindowDuration
+                    )
                 }
             },
             onShelfItemSelected: { [weak self] item in
@@ -501,7 +520,7 @@ final class AppModel: ObservableObject {
                 self.activationService.activateAppFast(pid: item.pid)
                 self.overviewController?.hideImmediately()
                 self.activationService.raiseSpecificWindow(shelfItem: item)
-                self.dismissOverviewImmediately()
+                self.dismissOverviewImmediately(triggerDescription: "Shelf item")
             },
             onDesktopRequested: { [weak self] in
                 self?.showDesktop()
@@ -511,7 +530,7 @@ final class AppModel: ObservableObject {
                 self.activationService.activateAppFast(pid: pid)
                 self.overviewController?.hideImmediately()
                 self.activationService.raiseSpecificWindow(windowID: windowID, pid: pid)
-                self.dismissOverviewImmediately()
+                self.dismissOverviewImmediately(triggerDescription: "New window")
             }
         )
     }
@@ -572,21 +591,38 @@ final class AppModel: ObservableObject {
 
     // MARK: - Dismiss
 
-    private func dismissOverviewImmediately() {
+    private func dismissOverviewImmediately(triggerDescription: String) {
+        let sessionID = beginOverviewCloseMetrics(triggerDescription: triggerDescription)
+        let dismissStartNanoseconds = DispatchTime.now().uptimeNanoseconds
+
         if let controller = overviewController {
-            controller.hideImmediately()
+            let hideOverlayDuration = measureMilliseconds {
+                controller.hideImmediately()
+            }
+            recordOverviewCloseTiming(
+                sessionID,
+                label: "Hide overlay immediately",
+                milliseconds: hideOverlayDuration
+            )
         }
 
-        startLivePreviewsTask?.cancel()
-        startLivePreviewsTask = nil
-        resumePreviewUpdatesTask?.cancel()
-        resumePreviewUpdatesTask = nil
-        startStillPreviewLoadingTask?.cancel()
-        startStillPreviewLoadingTask = nil
-        preResolveAXHandlesTask?.cancel()
-        preResolveAXHandlesTask = nil
-        stopLiveRefresh()
-        previewController.stopAll()
+        let cancelPreviewWorkDuration = measureMilliseconds {
+            startLivePreviewsTask?.cancel()
+            startLivePreviewsTask = nil
+            resumePreviewUpdatesTask?.cancel()
+            resumePreviewUpdatesTask = nil
+            startStillPreviewLoadingTask?.cancel()
+            startStillPreviewLoadingTask = nil
+            preResolveAXHandlesTask?.cancel()
+            preResolveAXHandlesTask = nil
+            stopLiveRefresh()
+            previewController.stopAll()
+        }
+        recordOverviewCloseTiming(
+            sessionID,
+            label: "Cancel/stop preview work",
+            milliseconds: cancelPreviewWorkDuration
+        )
 
         guard let controller = overviewController else {
             isOverviewVisible = false
@@ -596,43 +632,96 @@ final class AppModel: ObservableObject {
         currentSnapshot = nil
         overviewController = nil
         isOverviewVisible = false
+        recordOverviewCloseTiming(
+            sessionID,
+            label: "Total synchronous dismiss start",
+            milliseconds: millisecondsSince(dismissStartNanoseconds)
+        )
 
         // Defer the heavy panel/layer teardown so the main thread unblocks
         // and the WindowServer can composite the target window sooner.
-        Task { @MainActor in
-            controller.close()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let closeControllerDuration = self.measureMilliseconds {
+                controller.close()
+            }
+            self.recordOverviewCloseTiming(
+                sessionID,
+                label: "Close controller",
+                milliseconds: closeControllerDuration
+            )
+            self.recordOverviewCloseTiming(
+                sessionID,
+                label: "Total dismiss flow",
+                milliseconds: self.millisecondsSince(dismissStartNanoseconds)
+            )
         }
     }
 
     private func dismissOverviewAnimated(
         selectedWindowID: CGWindowID?,
         duration: CFTimeInterval,
-        durationNanoseconds: UInt64
+        durationNanoseconds: UInt64,
+        sessionID: UUID
     ) {
         guard let controller = overviewController else {
             return
         }
 
-        startLivePreviewsTask?.cancel()
-        startLivePreviewsTask = nil
-        startStillPreviewLoadingTask?.cancel()
-        startStillPreviewLoadingTask = nil
-        preResolveAXHandlesTask?.cancel()
-        preResolveAXHandlesTask = nil
-        stopLiveRefresh()
-        previewController.stopAll()
-        controller.setPreviewUpdatesSuspended(true)
+        let dismissStartNanoseconds = DispatchTime.now().uptimeNanoseconds
 
-        controller.animateDismiss(selectedWindowID: selectedWindowID, duration: duration)
+        let cancelPreviewWorkDuration = measureMilliseconds {
+            startLivePreviewsTask?.cancel()
+            startLivePreviewsTask = nil
+            startStillPreviewLoadingTask?.cancel()
+            startStillPreviewLoadingTask = nil
+            preResolveAXHandlesTask?.cancel()
+            preResolveAXHandlesTask = nil
+            stopLiveRefresh()
+            previewController.stopAll()
+            controller.setPreviewUpdatesSuspended(true)
+        }
+        recordOverviewCloseTiming(
+            sessionID,
+            label: "Cancel/stop preview work",
+            milliseconds: cancelPreviewWorkDuration
+        )
 
-        Task { @MainActor in
+        let startDismissAnimationDuration = measureMilliseconds {
+            controller.animateDismiss(selectedWindowID: selectedWindowID, duration: duration)
+        }
+        recordOverviewCloseTiming(
+            sessionID,
+            label: "Start dismiss animation",
+            milliseconds: startDismissAnimationDuration
+        )
+        recordOverviewCloseTiming(
+            sessionID,
+            label: "Total synchronous dismiss start",
+            milliseconds: millisecondsSince(dismissStartNanoseconds)
+        )
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 try await Task.sleep(nanoseconds: durationNanoseconds)
             } catch {
                 return
             }
 
-            controller.close()
+            let closeControllerDuration = self.measureMilliseconds {
+                controller.close()
+            }
+            self.recordOverviewCloseTiming(
+                sessionID,
+                label: "Close controller",
+                milliseconds: closeControllerDuration
+            )
+            self.recordOverviewCloseTiming(
+                sessionID,
+                label: "Total dismiss flow",
+                milliseconds: self.millisecondsSince(dismissStartNanoseconds)
+            )
         }
     }
 
@@ -657,6 +746,40 @@ final class AppModel: ObservableObject {
 
         if isOverviewVisible {
             startLiveRefresh()
+        }
+    }
+
+    private func beginOverviewCloseMetrics(triggerDescription: String) -> UUID {
+        let sessionID = UUID()
+        latestOverviewCloseSessionID = sessionID
+
+        let stagedLabels = [
+            "Activate target app",
+            "Hide overlay immediately",
+            "Cancel/stop preview work",
+            "Start dismiss animation",
+            "Raise specific window",
+            "Close controller",
+            "Total synchronous dismiss start",
+            "Total dismiss flow"
+        ]
+
+        latestOverviewCloseMetrics = OverviewCloseMetricsReport(
+            triggerDescription: triggerDescription,
+            entries: stagedLabels.map { OverviewOpenTimingEntry(label: $0, milliseconds: nil) }
+        )
+        return sessionID
+    }
+
+    private func recordOverviewCloseTiming(_ sessionID: UUID, label: String, milliseconds: Double) {
+        guard sessionID == latestOverviewCloseSessionID else { return }
+
+        if let index = latestOverviewCloseMetrics.entries.firstIndex(where: { $0.label == label }) {
+            latestOverviewCloseMetrics.entries[index].milliseconds = milliseconds
+        } else {
+            latestOverviewCloseMetrics.entries.append(
+                OverviewOpenTimingEntry(label: label, milliseconds: milliseconds)
+            )
         }
     }
 
