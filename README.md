@@ -25,6 +25,11 @@ https://tomeraviv.github.io/FastMissionControl/
 
 This repo is publishable as an open-source alpha. The app builds locally in Xcode and the layout tests run from the command line. It is not yet a polished end-user release because there is no signed/notarized distribution and a few workflow features are still missing.
 
+## Common Issues
+
+- Moving windows causes stutters: Known MacOS issue when resuming from sleep multiple times. **Reboot to resolve**.
+- Random stutter, frame drops across all apps & video playback: Known MacOS issue. **Disconnect & Replace bad headphones cable. Disable Bluetooth / WiFi**.
+
 ## Still Missing
 
 - [ ] Global keyboard shortcuts / hotkeys
