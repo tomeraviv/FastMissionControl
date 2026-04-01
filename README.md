@@ -34,7 +34,7 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 - **Very long input delay / window move delayed & trailing mouse**: Known MacOS issue.
   **Potential Fix**: Stop screen sharing / mirroring. Check for CPU / GPU over-temp throttling. Change main display assignment in Display settings.
 - **Consistent frame timing jitter**: Known MacOS issue when connecting and disconnecting 2 or more displays with different refresh rates.
-  **Potential Fix**: Reboot. Close any Metal apps that are rendering a full-screen overlay. (for Brightintosh / Vivid / BrightXDR)
+  **Potential Fix**: Reboot. Close any Metal apps that are rendering a full-screen overlay. (for Brightintosh / Vivid / BrightXDR) Change audio output format using 'Audio MIDI Setup'.
 
 ## Still Missing
 
