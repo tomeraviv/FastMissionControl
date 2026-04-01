@@ -27,8 +27,10 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 ## Common Issues
 
-- Moving windows causes stutters: Known MacOS issue when resuming from sleep multiple times. **Reboot to resolve**.
-- Random stutter, frame drops across all apps & video playback: Known MacOS issue. **Disconnect & Replace bad headphones cable. Disable Bluetooth / WiFi**.
+- **Moving windows causes stutters**: Known MacOS issue when resuming from sleep multiple times.
+  **Potential Fix**: Reboot to resolve.
+- **Random stutter & frame drops across all apps & video playback**: Known MacOS issue.
+  **Potential Fix**: Disconnect & Replace bad headphones cable. Disable Bluetooth / WiFi.
 
 ## Still Missing
 
