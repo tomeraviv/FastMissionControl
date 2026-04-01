@@ -1,6 +1,6 @@
 # Fast Mission Control
 
-Fast Mission Control is an open-source macOS app that **makes Mission Control feel fast again**, especially on 4K+, 5K, ultrawide, high refresh-rate and multi-monitor setups where Apple's default Mission Control often feels **laggy and slow**.
+Fast Mission Control is an open-source macOS app that **makes Mission Control feel fast again**, especially on 4K+, 5K, ultra-wide, high refresh-rate and multi-monitor setups where Apple's default Mission Control often feels **laggy and slow**.
 
 If you found this repo because you searched Google or Reddit for "How to speed up animations on macOS" or "Speed up Mission Control animations in macOS", the old terminal tweak:
 
@@ -15,11 +15,11 @@ https://tomeraviv.github.io/FastMissionControl/
 ## What It Does
 
 - Opens a fast custom Mission Control-style overview **that Does Not Stutter**.
-- Has better window selector layout than Misson Control, **reducing mouse travel**.
+- Has better window selector layout than Mission Control, **reducing mouse travel**.
 - Shows the **Full Window Title, Name and Icon** without having to mouse over.
 - Shows still and low-FPS live previews for windows.
 - Includes a desktop action and app shelf behavior.
-- Fixes decade old known Misson Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
+- Fixes decade old known Mission Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
 
 ## Status
 
@@ -28,14 +28,19 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 ## Common Issues
 
 - **Moving windows causes stutters**: Known MacOS issue when resuming from sleep multiple times.
+  
   **Potential Fix**: Reboot to resolve.
 - **Random stutter & frame drops across all apps & video playback**: Known MacOS issue.
+  
   **Potential Fix**: Disconnect & Replace bad headphones cable. Disable Bluetooth / WiFi.
+- **Very long input delay / window moves delayed while trailing mouse**: Known MacOS issue.
+  
+  **Potential Fix**: Stop screen sharing / mirroring. Check for CPU / GPU over-temp throttling. Change main display assignment in Display settings.
 
 ## Still Missing
 
 - [ ] Global keyboard shortcuts / hotkeys
-- [ ] Add Metal rendering for faster perfornamce
+- [ ] Add Metal rendering for faster performance
 - [ ] Add demo video
 - [ ] Clean up main interface
 - [ ] Fix missing preview cache on first open & fast re-opens
