@@ -54,6 +54,17 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 Open `FastMissionControl.xcodeproj` in Xcode and run the `FastMissionControl` scheme.
 
+Preferred CLI workflow:
+
+```sh
+make build
+make install
+make clean
+```
+
+The `make build` target writes the app to `./build/Build/Products/Release/FastMissionControl.app`, and
+`make install` copies that stable build to `/Applications/FastMissionControl.app`.
+
 CLI checks:
 
 ```sh
