@@ -27,13 +27,13 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 ## Common Issues
 
-- **Moving windows causes stutters**: Known MacOS issue when resuming from sleep multiple times.
+- **Moving windows causes stutters**: Known macOS issue when resuming from sleep multiple times.
   **Potential Fix**: Reboot to resolve.
-- **Random stutter & frame drops across all apps & video playback**: Known MacOS issue.
+- **Random stutter & frame drops across all apps & video playback**: Known macOS issue.
   **Potential Fix**: Disconnect & Replace bad headphones cable. Disable Bluetooth / WiFi.
-- **Very long input delay / window move delayed & trailing mouse**: Known MacOS issue.
+- **Very long input delay / window move delayed & trailing mouse**: Known macOS issue.
   **Potential Fix**: Stop screen sharing / mirroring. Check for CPU / GPU over-temp throttling. Change main display assignment in Display settings.
-- **Consistent frame timing jitter**: Known MacOS issue when connecting and disconnecting 2 or more displays with different refresh rates.
+- **Consistent frame timing jitter**: Known macOS issue when connecting and disconnecting 2 or more displays with different refresh rates.
   **Potential Fix**: Reboot. Close any Metal apps that are rendering a full-screen overlay. (for Brightintosh / Vivid / BrightXDR) Change audio output format using 'Audio MIDI Setup'.
 
 ## Still Missing
