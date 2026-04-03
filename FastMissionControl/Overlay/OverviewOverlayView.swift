@@ -23,6 +23,8 @@ private struct ResolvedWallpaper {
     let wallpaperWindowID: CGWindowID?
     let captureSize: CGSize
     let scale: CGFloat
+    let colorSpaceName: String?
+    let supportsEDR: Bool
 }
 
 @MainActor
@@ -41,6 +43,7 @@ final class OverviewDisplayView: NSView {
     private let snapshot: OverviewSnapshot
     private let showsShelf: Bool
     private let displayOrigin: CGPoint
+    private let displaySupportsEDR: Bool
     private let windowDescriptors: [WindowDescriptor]
 
     private let wallpaperLayer = CALayer()
@@ -80,6 +83,7 @@ final class OverviewDisplayView: NSView {
         self.snapshot = snapshot
         self.showsShelf = showsShelf
         displayOrigin = display.localFrame.origin
+        displaySupportsEDR = (Self.screen(for: display.id)?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
         windowDescriptors = snapshot.windows
             .filter { $0.displayID == display.id }
             .sorted { lhs, rhs in
@@ -92,12 +96,20 @@ final class OverviewDisplayView: NSView {
         layer = CALayer()
         layer?.backgroundColor = NSColor.clear.cgColor
         layer?.masksToBounds = true
+        if displaySupportsEDR {
+            layer?.contentsFormat = .RGBA16Float
+            layer?.wantsExtendedDynamicRangeContent = true
+        }
 
         // Desktop wallpaper as backdrop (loaded async to avoid blocking open).
         wallpaperLayer.contentsGravity = .resizeAspectFill
         wallpaperLayer.frame = CGRect(origin: .zero, size: display.localFrame.size)
         wallpaperLayer.zPosition = -2
         wallpaperLayer.opacity = 0
+        if displaySupportsEDR {
+            wallpaperLayer.contentsFormat = .RGBA16Float
+            wallpaperLayer.wantsExtendedDynamicRangeContent = true
+        }
         // Try cache first (instant on 2nd+ open), else load async.
         if let wallpaper = Self.resolveWallpaper(for: display.id),
            let cached = Self.wallpaperCache[wallpaper.cacheKey] {
@@ -525,9 +537,7 @@ final class OverviewDisplayView: NSView {
     private static let desktopWallpaperLayer = -2147483624
 
     private static func resolveWallpaper(for displayID: CGDirectDisplayID) -> ResolvedWallpaper? {
-        guard let screen = NSScreen.screens.first(where: {
-            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(displayID)
-        }),
+        guard let screen = screen(for: displayID),
         let url = NSWorkspace.shared.desktopImageURL(for: screen) else {
             return nil
         }
@@ -543,8 +553,16 @@ final class OverviewDisplayView: NSView {
             cacheKey: cacheKey,
             wallpaperWindowID: currentWallpaperWindowID(for: screen),
             captureSize: screen.frame.size,
-            scale: max(screen.backingScaleFactor, 1)
+            scale: max(screen.backingScaleFactor, 1),
+            colorSpaceName: screen.colorSpace?.cgColorSpace?.name as String?,
+            supportsEDR: screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
         )
+    }
+
+    private static func screen(for displayID: CGDirectDisplayID) -> NSScreen? {
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(displayID)
+        }
     }
 
     /// Loads the wallpaper on a background thread and sets it when ready.
@@ -629,10 +647,19 @@ final class OverviewDisplayView: NSView {
         }
 
         let filter = SCContentFilter(desktopIndependentWindow: shareableWindow)
-        let configuration = SCStreamConfiguration()
+        let configuration: SCStreamConfiguration
+        if #available(macOS 15.0, *), wallpaper.supportsEDR {
+            configuration = SCStreamConfiguration(preset: .captureHDRScreenshotLocalDisplay)
+            configuration.captureDynamicRange = .hdrLocalDisplay
+        } else {
+            configuration = SCStreamConfiguration()
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA
+            if let colorSpaceName = wallpaper.colorSpaceName {
+                configuration.colorSpaceName = colorSpaceName as CFString
+            }
+        }
         configuration.width = max(1, size_t(wallpaper.captureSize.width * wallpaper.scale))
         configuration.height = max(1, size_t(wallpaper.captureSize.height * wallpaper.scale))
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = true
         configuration.showsCursor = false
@@ -667,7 +694,11 @@ final class OverviewDisplayView: NSView {
         }
 
         for descriptor in windowDescriptors.reversed() {
-            let cardLayer = WindowCardLayer(descriptor: descriptor, displayOrigin: displayOrigin)
+            let cardLayer = WindowCardLayer(
+                descriptor: descriptor,
+                displayOrigin: displayOrigin,
+                displaySupportsEDR: displaySupportsEDR
+            )
             cardLayer.zPosition = CGFloat(10_000 - descriptor.zIndex)
             rootLayer.addSublayer(cardLayer)
             cardLayers[descriptor.id] = cardLayer
@@ -812,7 +843,7 @@ private final class WindowCardLayer: CALayer {
     private let goneOverlayLayer = CALayer()
     private let goneIconLayer = CALayer()
 
-    init(descriptor: WindowDescriptor, displayOrigin: CGPoint) {
+    init(descriptor: WindowDescriptor, displayOrigin: CGPoint, displaySupportsEDR: Bool) {
         sourceRect = descriptor.sourceFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
         targetRect = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
 
@@ -834,6 +865,10 @@ private final class WindowCardLayer: CALayer {
         previewLayer.masksToBounds = true
         previewLayer.minificationFilter = .trilinear
         previewLayer.magnificationFilter = .trilinear
+        if displaySupportsEDR {
+            previewLayer.contentsFormat = .RGBA16Float
+            previewLayer.wantsExtendedDynamicRangeContent = true
+        }
         addSublayer(previewLayer)
 
         borderLayer.fillColor = NSColor.clear.cgColor

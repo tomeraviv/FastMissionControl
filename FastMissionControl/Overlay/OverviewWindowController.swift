@@ -239,6 +239,11 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         ]
         panel.ignoresMouseEvents = false
         panel.acceptsMouseMovedEvents = true
+        if let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(display.id)
+        }) {
+            panel.colorSpace = screen.colorSpace
+        }
 
         super.init(window: panel)
 

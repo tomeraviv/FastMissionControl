@@ -354,6 +354,8 @@ private struct PermissionRow: View {
     }
 }
 
-#Preview {
-    ContentView(model: AppModel(settings: AppSettings()))
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView(model: AppModel(settings: AppSettings()))
+    }
 }

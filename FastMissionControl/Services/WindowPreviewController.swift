@@ -5,6 +5,7 @@
 //  Created by Codex.
 //
 
+import AppKit
 import CoreGraphics
 import CoreImage
 import CoreMedia
@@ -14,6 +15,11 @@ import ScreenCaptureKit
 
 @MainActor
 final class WindowPreviewController {
+    private struct CaptureDisplayConfiguration {
+        let colorSpaceName: String?
+        let prefersHDR: Bool
+    }
+
     private let settings: AppSettings
     private var snapshot: OverviewSnapshot?
     private var hoveredWindowID: CGWindowID?
@@ -66,10 +72,13 @@ final class WindowPreviewController {
                 return
             }
 
+            let displayConfiguration = captureDisplayConfiguration(for: descriptor.displayID)
+
             guard let image = await Self.captureOffMainActor(
                 shareableWindow: descriptor.shareableWindow,
                 targetFrame: descriptor.targetFrame,
-                longestEdge: 1000
+                longestEdge: 1000,
+                displayConfiguration: displayConfiguration
             ) else {
                 continue
             }
@@ -166,7 +175,7 @@ final class WindowPreviewController {
             }
 
             let captureStart = DispatchTime.now().uptimeNanoseconds
-            let results = await Self.captureBatch(
+            let results = await captureBatch(
                 desiredWindows,
                 maxConcurrentCaptures: settings.livePreviewCaptureConcurrencyLimit
             )
@@ -362,10 +371,13 @@ final class WindowPreviewController {
             return
         }
 
+        let displayConfiguration = captureDisplayConfiguration(for: descriptor.displayID)
+
         guard let image = await Self.captureOffMainActor(
             shareableWindow: descriptor.shareableWindow,
             targetFrame: descriptor.targetFrame,
-            longestEdge: 1000
+            longestEdge: 1000,
+            displayConfiguration: displayConfiguration
         ) else {
             stillTasks.removeValue(forKey: descriptor.id)
             return
@@ -386,7 +398,7 @@ final class WindowPreviewController {
 
     /// Captures a batch of windows concurrently after reading the per-window
     /// capture inputs on the main actor.
-    private static func captureBatch(
+    private func captureBatch(
         _ descriptors: [WindowDescriptor],
         maxConcurrentCaptures: Int
     ) async -> [(WindowDescriptor, CGImage)] {
@@ -397,7 +409,8 @@ final class WindowPreviewController {
             var inFlight = 0
 
             while inFlight < concurrencyLimit, let descriptor = iterator.next() {
-                addCaptureTask(for: descriptor, to: &group)
+                let displayConfiguration = captureDisplayConfiguration(for: descriptor.displayID)
+                Self.addCaptureTask(for: descriptor, displayConfiguration: displayConfiguration, to: &group)
                 inFlight += 1
             }
 
@@ -413,7 +426,8 @@ final class WindowPreviewController {
                 }
 
                 if let nextDescriptor = iterator.next() {
-                    addCaptureTask(for: nextDescriptor, to: &group)
+                    let displayConfiguration = captureDisplayConfiguration(for: nextDescriptor.displayID)
+                    Self.addCaptureTask(for: nextDescriptor, displayConfiguration: displayConfiguration, to: &group)
                     inFlight += 1
                 }
             }
@@ -424,6 +438,7 @@ final class WindowPreviewController {
 
     private static func addCaptureTask(
         for descriptor: WindowDescriptor,
+        displayConfiguration: CaptureDisplayConfiguration,
         to group: inout TaskGroup<(WindowDescriptor, CGImage?)>
     ) {
         let shareableWindow = descriptor.shareableWindow
@@ -432,7 +447,8 @@ final class WindowPreviewController {
             let image = await captureOffMainActor(
                 shareableWindow: shareableWindow,
                 targetFrame: targetFrame,
-                longestEdge: 720
+                longestEdge: 720,
+                displayConfiguration: displayConfiguration
             )
             return (descriptor, image)
         }
@@ -443,22 +459,65 @@ final class WindowPreviewController {
     private nonisolated static func captureOffMainActor(
         shareableWindow: SCWindow?,
         targetFrame: CGRect,
-        longestEdge: CGFloat
+        longestEdge: CGFloat,
+        displayConfiguration: CaptureDisplayConfiguration
     ) async -> CGImage? {
         guard let shareableWindow else { return nil }
         let filter = SCContentFilter(desktopIndependentWindow: shareableWindow)
-        let configuration = SCStreamConfiguration()
+        let configuration = makeScreenshotConfiguration(
+            targetFrame: targetFrame,
+            longestEdge: longestEdge,
+            displayConfiguration: displayConfiguration
+        )
+        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    }
+
+    private func captureDisplayConfiguration(for displayID: CGDirectDisplayID) -> CaptureDisplayConfiguration {
+        guard let screen = screen(for: displayID) else {
+            return CaptureDisplayConfiguration(colorSpaceName: nil, prefersHDR: false)
+        }
+
+        return CaptureDisplayConfiguration(
+            colorSpaceName: screen.colorSpace?.cgColorSpace?.name as String?,
+            prefersHDR: screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
+        )
+    }
+
+    private func screen(for displayID: CGDirectDisplayID) -> NSScreen? {
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == UInt32(displayID)
+        }
+    }
+
+    private nonisolated static func makeScreenshotConfiguration(
+        targetFrame: CGRect,
+        longestEdge: CGFloat,
+        displayConfiguration: CaptureDisplayConfiguration
+    ) -> SCStreamConfiguration {
+        let configuration: SCStreamConfiguration
+
+        if #available(macOS 15.0, *), displayConfiguration.prefersHDR {
+            configuration = SCStreamConfiguration(preset: .captureHDRScreenshotLocalDisplay)
+            configuration.captureDynamicRange = .hdrLocalDisplay
+        } else {
+            configuration = SCStreamConfiguration()
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA
+            if let colorSpaceName = displayConfiguration.colorSpaceName {
+                configuration.colorSpaceName = colorSpaceName as CFString
+            }
+        }
+
         let targetLongestEdge = max(targetFrame.width, targetFrame.height)
         let scale = max(1.0, min(3.0, longestEdge / max(targetLongestEdge, 1)))
         configuration.width = max(320, size_t(targetFrame.width * scale))
         configuration.height = max(200, size_t(targetFrame.height * scale))
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = true
         configuration.showsCursor = false
         configuration.capturesAudio = false
         configuration.ignoreShadowsSingleWindow = true
-        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+
+        return configuration
     }
 
     private var livePreviewMinIntervalNanoseconds: UInt64 {
