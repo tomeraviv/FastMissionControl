@@ -58,18 +58,27 @@ Preferred CLI workflow:
 
 ```sh
 make build
+make release-zip
 make install
 make clean
 ```
 
 The `make build` target writes the app to `./build/Build/Products/Release/FastMissionControl.app`, and
-`make install` copies that stable build to `/Applications/FastMissionControl.app`.
+`make release-zip` packages that app bundle into `./build/FastMissionControl-macOS.zip`.
+`make install` copies the stable build to `/Applications/FastMissionControl.app`.
+
+## GitHub Releases
+
+Publishing a GitHub release triggers `.github/workflows/release.yml`, which builds the macOS app on `macos-latest`,
+packages the `.app` bundle as a zip, and uploads it to the release assets.
+
+The uploaded asset is currently an **unsigned / non-notarized** build intended for alpha distribution.
 
 CLI checks:
 
 ```sh
-xcodebuild test -project FastMissionControl.xcodeproj -scheme FastMissionControl -configuration Debug -destination 'platform=macOS' -only-testing:FastMissionControlTests CODE_SIGNING_ALLOWED=NO
-xcodebuild build -project FastMissionControl.xcodeproj -scheme FastMissionControl -configuration Release -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+make test XCODEBUILD_FLAGS='CODE_SIGNING_ALLOWED=NO'
+make build XCODEBUILD_FLAGS='CODE_SIGNING_ALLOWED=NO'
 ```
 
 ## Permissions
