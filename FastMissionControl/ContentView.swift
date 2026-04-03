@@ -26,6 +26,9 @@ struct ContentView: View {
                     Text("Mouse button \(settings.toggleButtonNumber + 1) toggles the overview.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
+                    Text(Self.buildTimestampLabel)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.secondary)
                 }
 
                 GroupBox {
@@ -145,6 +148,23 @@ struct ContentView: View {
 
         return String(format: "%.2f ms", milliseconds)
     }
+
+    private static var buildTimestampLabel: String {
+        guard let executableURL = Bundle.main.executableURL,
+              let values = try? executableURL.resourceValues(forKeys: [.contentModificationDateKey]),
+              let buildDate = values.contentModificationDate else {
+            return "Build: unavailable"
+        }
+
+        return "Build: \(buildTimestampFormatter.string(from: buildDate))"
+    }
+
+    private static let buildTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 
 private struct SettingsBox: View {

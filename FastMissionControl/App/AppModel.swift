@@ -112,7 +112,26 @@ final class AppModel: ObservableObject {
     }
 
     func hideControlWindow() {
-        NSApplication.shared.hide(nil)
+        for window in controlWindows {
+            window.orderOut(nil)
+        }
+
+        _ = NSApp.setActivationPolicy(.accessory)
+        NSApp.deactivate()
+    }
+
+    @discardableResult
+    func showControlWindow() -> Bool {
+        _ = NSApp.setActivationPolicy(.regular)
+
+        guard let window = preferredControlWindow else {
+            NSApp.activate(ignoringOtherApps: true)
+            return false
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return true
     }
 
     // MARK: - Toggle (always synchronous, always instant)
@@ -218,6 +237,16 @@ final class AppModel: ObservableObject {
 
     func closeOverview() {
         dismissOverviewImmediately(triggerDescription: "Immediate close")
+    }
+
+    private var controlWindows: [NSWindow] {
+        NSApp.windows.filter { window in
+            !(window is NSPanel)
+        }
+    }
+
+    private var preferredControlWindow: NSWindow? {
+        controlWindows.first(where: \.isVisible) ?? controlWindows.first
     }
 
     // MARK: - Show
