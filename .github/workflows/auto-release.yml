@@ -1,0 +1,44 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release-main
+  cancel-in-progress: true
+
+jobs:
+  publish-main-release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build packaged macOS app
+        run: make release-zip XCODEBUILD_FLAGS='CODE_SIGNING_ALLOWED=NO' ARCHIVE_BASENAME='FastMissionControl-main-latest-macOS'
+
+      - name: Publish rolling prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: main-latest
+          target_commitish: ${{ github.sha }}
+          name: Latest main build
+          prerelease: true
+          make_latest: false
+          generate_release_notes: false
+          body: |
+            Automatic prerelease build from `main`.
+
+            Commit: ${{ github.sha }}
+          files: build/FastMissionControl-main-latest-macOS.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true

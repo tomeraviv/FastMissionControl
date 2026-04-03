@@ -74,6 +74,9 @@ packages a universal `arm64 + x86_64` `.app` bundle as a zip, and uploads it to 
 
 The uploaded asset is currently an **unsigned / non-notarized** build intended for alpha distribution.
 
+Every push to `main` also triggers `.github/workflows/auto-release.yml`, which updates a rolling prerelease tagged
+`main-latest` and replaces its packaged `.app` asset with the newest build from `main`.
+
 CLI checks:
 
 ```sh
