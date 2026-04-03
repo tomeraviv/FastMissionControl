@@ -9,6 +9,7 @@ TEST_CONFIGURATION := Debug
 ARCHIVE_BASENAME ?= $(SCHEME)-macOS
 ARCHIVE_PATH := $(DERIVED_DATA)/$(ARCHIVE_BASENAME).zip
 XCODEBUILD_FLAGS ?=
+RELEASE_ARCHS ?= arm64 x86_64
 
 .PHONY: help build test clean install app-path release-zip release-path
 
@@ -18,7 +19,7 @@ help:
 		'  make build     Build $(APP_NAME) into $(APP_PATH)' \
 		'  make test      Run FastMissionControlTests on macOS' \
 		'  make install   Build and copy $(APP_NAME) into $(INSTALL_PATH)' \
-		'  make release-zip  Build and package $(APP_NAME) into $(ARCHIVE_PATH)' \
+		'  make release-zip  Build a universal $(APP_NAME) zip into $(ARCHIVE_PATH)' \
 		'  make clean     Remove the local build directory ($(DERIVED_DATA))' \
 		'  make app-path  Print the expected built app path' \
 		'  make release-path  Print the expected packaged zip path'
@@ -49,7 +50,8 @@ install: build
 	sudo rm -rf $(INSTALL_PATH)
 	sudo ditto $(APP_PATH) $(INSTALL_PATH)
 
-release-zip: build
+release-zip:
+	$(MAKE) build XCODEBUILD_FLAGS='$(strip $(XCODEBUILD_FLAGS) ONLY_ACTIVE_ARCH=NO ARCHS="$(RELEASE_ARCHS)")'
 	rm -f $(ARCHIVE_PATH)
 	ditto -c -k --sequesterRsrc --keepParent $(APP_PATH) $(ARCHIVE_PATH)
 
