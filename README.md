@@ -12,6 +12,11 @@ does not fix the problem on current macOS versions. This project exists because 
 
 https://tomeraviv.github.io/FastMissionControl/
 
+## Demo
+
+![Fast Mission Control demo](docs/ezgif-76d80048db99460b.gif)
+
+
 ## What It Does
 
 - Opens a fast custom Mission Control-style overview **that Does Not Stutter**.
@@ -40,7 +45,6 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 - [ ] Global keyboard shortcuts / hotkeys
 - [ ] Add Metal rendering for faster performance
-- [ ] Add demo video
 - [ ] Clean up main interface
 - [ ] Fix missing preview cache on first open & fast re-opens
 - [ ] Fix slow settings form UI
