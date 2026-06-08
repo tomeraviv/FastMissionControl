@@ -23,7 +23,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Fast Mission Control")
                         .font(.system(size: 24, weight: .bold))
-                    Text("Mouse button \(settings.toggleButtonNumber + 1) toggles the overview.")
+                    Text("Mouse button \(settings.toggleButtonNumber + 1) or Option+Tab toggles the overview. Arrows or Tab pick; Return / Space activates; type to filter.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                     Text(Self.buildTimestampLabel)

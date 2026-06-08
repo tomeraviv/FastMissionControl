@@ -106,6 +106,28 @@ final class WindowActivationService {
         _ = AXUIElementPerformAction(best.element, kAXRaiseAction as CFString)
     }
 
+    /// Close the descriptor's window via its AX close button. Returns true if a press action was dispatched.
+    @discardableResult
+    func closeWindow(descriptor: WindowDescriptor) -> Bool {
+        let handle = descriptor.axWindow ?? resolveWindowHandle(for: descriptor)
+        descriptor.axWindow = handle
+
+        guard let handle else { return false }
+
+        var closeButton: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            handle.element,
+            kAXCloseButtonAttribute as CFString,
+            &closeButton
+        )
+        guard status == .success, let closeButton, CFGetTypeID(closeButton) == AXUIElementGetTypeID() else {
+            return false
+        }
+
+        let element = closeButton as! AXUIElement
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
     /// Resolve and raise the first restorable shelf window.
     func raiseSpecificWindow(shelfItem item: AppShelfItem) {
         guard let handle = item.restorableWindows.first else { return }

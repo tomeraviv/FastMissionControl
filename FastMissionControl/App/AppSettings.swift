@@ -29,7 +29,11 @@ struct SettingDefinition: Identifiable {
 
 final class AppSettings: ObservableObject {
     enum Key: String, CaseIterable, Identifiable {
+        case launchAtLogin
         case toggleButtonNumber
+        case searchMatchAllWords
+        case searchHideNonMatches
+        case confirmWindowClose
         case prewarmIntervalSeconds
         case liveRefreshIntervalSeconds
         case livePreviewStartupDelaySeconds
@@ -68,11 +72,39 @@ final class AppSettings: ObservableObject {
 
     static let definitions: [SettingDefinition] = [
         SettingDefinition(
+            key: .launchAtLogin,
+            section: "General",
+            title: "Launch at Login",
+            description: "Start Fast Mission Control automatically when you log in. On by default for a menu-bar app.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
             key: .toggleButtonNumber,
             section: "Trigger",
             title: "Toggle Button Number",
             description: "Zero-based mouse button number used to open the overview.",
             kind: .integer(defaultValue: 3, range: 2...8, step: 1)
+        ),
+        SettingDefinition(
+            key: .searchMatchAllWords,
+            section: "Search",
+            title: "Match All Search Words",
+            description: "Require every typed word to match (AND). When off, a window matches if any word matches (OR).",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .searchHideNonMatches,
+            section: "Search",
+            title: "Hide Non-Matching Windows",
+            description: "Re-layout the overview to show only matching windows. When off, non-matches stay in place but dimmed.",
+            kind: .toggle(defaultValue: false)
+        ),
+        SettingDefinition(
+            key: .confirmWindowClose,
+            section: "Window",
+            title: "Confirm Window Close",
+            description: "Show a Yes / No prompt when closing a window with its title-bar ✕. When off, the ✕ closes immediately.",
+            kind: .toggle(defaultValue: true)
         ),
         SettingDefinition(
             key: .prewarmIntervalSeconds,
@@ -149,7 +181,7 @@ final class AppSettings: ObservableObject {
             section: "Layout",
             title: "Title Bar Gap",
             description: "Gap between the title bar chip and the thumbnail body.",
-            kind: .double(defaultValue: 6.0, range: 0.0...30.0, step: 1.0)
+            kind: .double(defaultValue: 0.0, range: 0.0...30.0, step: 1.0)
         ),
         SettingDefinition(
             key: .layoutTitleBarHeight,
@@ -309,8 +341,24 @@ final class AppSettings: ObservableObject {
         setValue(.double(newValue), for: key)
     }
 
+    var launchAtLogin: Bool {
+        bool(.launchAtLogin)
+    }
+
     var toggleButtonNumber: Int {
         int(.toggleButtonNumber)
+    }
+
+    var searchMatchAllWords: Bool {
+        bool(.searchMatchAllWords)
+    }
+
+    var searchHideNonMatches: Bool {
+        bool(.searchHideNonMatches)
+    }
+
+    var confirmWindowClose: Bool {
+        bool(.confirmWindowClose)
     }
 
     var prewarmIntervalNanoseconds: UInt64 {
