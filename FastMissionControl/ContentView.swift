@@ -23,7 +23,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Fast Mission Control")
                         .font(.system(size: 24, weight: .bold))
-                    Text("Mouse button \(settings.toggleButtonNumber + 1) toggles the overview.")
+                    Text("Mouse button \(settings.toggleButtonNumber + 1) or Option+Tab toggles the overview. Arrows or Tab pick; Return / Space activates; type to filter.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                     Text(Self.buildTimestampLabel)
@@ -116,7 +116,12 @@ struct ContentView: View {
                         .font(.system(size: 13, weight: .semibold))
                 }
 
-                SettingsBox(settings: model.settings)
+                SettingsBox(
+                    settings: model.settings,
+                    onLaunchAtLoginChanged: { enabled in
+                        model.requestLaunchAtLoginChange(enabled: enabled)
+                    }
+                )
 
                 HStack(spacing: 12) {
                     Button(model.isOverviewVisible ? "Close Overview" : "Open Overview") {
@@ -169,6 +174,7 @@ struct ContentView: View {
 
 private struct SettingsBox: View {
     @ObservedObject var settings: AppSettings
+    let onLaunchAtLoginChanged: (Bool) -> Void
     @State private var isExpanded = false
 
     var body: some View {
@@ -209,7 +215,11 @@ private struct SettingsBox: View {
                                 .tracking(0.5)
 
                             ForEach(settings.definitions(in: section)) { definition in
-                                SettingControlRow(settings: settings, definition: definition)
+                                SettingControlRow(
+                                    settings: settings,
+                                    definition: definition,
+                                    onLaunchAtLoginChanged: onLaunchAtLoginChanged
+                                )
                             }
                         }
                         .padding(.horizontal, 12)
@@ -236,6 +246,7 @@ private struct SettingsBox: View {
 private struct SettingControlRow: View {
     @ObservedObject var settings: AppSettings
     let definition: SettingDefinition
+    let onLaunchAtLoginChanged: (Bool) -> Void
 
     var body: some View {
         switch definition.kind {
@@ -297,7 +308,13 @@ private struct SettingControlRow: View {
     private var boolBinding: Binding<Bool> {
         Binding(
             get: { settings.bool(definition.key) },
-            set: { settings.set($0, for: definition.key) }
+            set: { newValue in
+                if definition.key == .launchAtLogin {
+                    onLaunchAtLoginChanged(newValue)
+                } else {
+                    settings.set(newValue, for: definition.key)
+                }
+            }
         )
     }
 

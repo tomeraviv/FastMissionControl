@@ -32,6 +32,30 @@ final class AXWindowMatcher {
         return best.0
     }
 
+    func strictMatch(
+        title: String?,
+        appKitBounds: CGRect,
+        candidates: [AXWindowHandle],
+        frameTolerance: CGFloat = 8
+    ) -> AXWindowHandle? {
+        let targetTitle = normalized(title)
+        let matches = candidates.filter { candidate in
+            guard !candidate.isMinimized,
+                  normalized(candidate.title) == targetTitle else {
+                return false
+            }
+
+            let frame = candidate.frame
+            return abs(frame.minX - appKitBounds.minX) <= frameTolerance
+                && abs(frame.minY - appKitBounds.minY) <= frameTolerance
+                && abs(frame.width - appKitBounds.width) <= frameTolerance
+                && abs(frame.height - appKitBounds.height) <= frameTolerance
+        }
+
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
     private func score(targetTitle: String?, targetFrame: CGRect, candidate: AXWindowHandle) -> CGFloat {
         var total: CGFloat = 0
 
@@ -39,7 +63,8 @@ final class AXWindowMatcher {
         if let targetTitle, !targetTitle.isEmpty {
             if targetTitle == candidateTitle {
                 total += 150
-            } else if candidateTitle?.contains(targetTitle) == true || targetTitle.contains(candidateTitle ?? "") {
+            } else if let candidateTitle,
+                      candidateTitle.contains(targetTitle) || targetTitle.contains(candidateTitle) {
                 total += 60
             } else {
                 total -= 35
@@ -59,8 +84,9 @@ final class AXWindowMatcher {
     }
 
     private func normalized(_ value: String?) -> String? {
-        value?
+        let normalized = value?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+        return normalized?.isEmpty == false ? normalized : nil
     }
 }

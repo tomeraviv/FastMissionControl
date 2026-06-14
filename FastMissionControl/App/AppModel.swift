@@ -20,12 +20,14 @@ final class AppModel: ObservableObject {
     let permissions = PermissionCoordinator()
 
     private let triggerMonitor = GlobalTriggerMonitor()
+    private let hotkeyMonitor = GlobalHotkeyMonitor()
     private let appCache = RunningApplicationCache()
     private let captureAvailabilityMonitor = CaptureAvailabilityMonitor()
     private let inventoryService: WindowInventoryService
     private let layoutEngine: SpatialOverviewLayout
     private let previewController: WindowPreviewController
     private let activationService = WindowActivationService()
+    private let launchAtLoginService = LaunchAtLoginService()
 
     private var overviewController: OverviewWindowController?
     private var currentSnapshot: OverviewSnapshot?
@@ -42,6 +44,7 @@ final class AppModel: ObservableObject {
     private var desktopHiddenPIDs: Set<pid_t> = []
     private var latestOverviewOpenSessionID = UUID()
     private var latestOverviewCloseSessionID = UUID()
+    private var hotkeyStartupError: String?
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -80,12 +83,18 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        triggerMonitor.onToggle = { [weak self] slowAnimation, eventTimestampNanoseconds in
-            self?.toggleOverview(
-                slowAnimation: slowAnimation,
-                triggerDescription: "Mouse hotkey",
-                hotkeyEventTimestampNanoseconds: eventTimestampNanoseconds
-            )
+        triggerMonitor.onToggle = { [weak self] slowAnimation, timestamp in
+            self?.handleTrigger(slowAnimation: slowAnimation, timestamp: timestamp, source: "Mouse hotkey")
+        }
+
+        hotkeyMonitor.onTrigger = { [weak self] slowAnimation, timestamp in
+            self?.handleTrigger(slowAnimation: slowAnimation, timestamp: timestamp, source: "Option+Tab hotkey")
+        }
+
+        do {
+            try hotkeyMonitor.start()
+        } catch {
+            hotkeyStartupError = error.localizedDescription
         }
 
         applySettings()
@@ -105,6 +114,17 @@ final class AppModel: ObservableObject {
         stopLiveRefresh()
         closeOverview()
         triggerMonitor.stop()
+        hotkeyMonitor.stop()
+    }
+
+    /// Routes a trigger from either the mouse-button monitor or the Option+Tab hotkey through the
+    /// single toggle path, tagging it with the source for the open/close metrics.
+    private func handleTrigger(slowAnimation: Bool, timestamp: UInt64, source: String) {
+        toggleOverview(
+            slowAnimation: slowAnimation,
+            triggerDescription: source,
+            hotkeyEventTimestampNanoseconds: timestamp
+        )
     }
 
     func refreshPermissions() {
@@ -123,24 +143,46 @@ final class AppModel: ObservableObject {
         lastStatus = "Accessibility prompt requested."
     }
 
-    func hideControlWindow() {
-        for window in controlWindows {
-            window.orderOut(nil)
+    func requestLaunchAtLoginChange(enabled: Bool) {
+        guard settings.launchAtLogin != enabled else { return }
+
+        if enabled {
+            NSApp.activate(ignoringOtherApps: true)
+
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Enable Launch at Login?"
+            alert.informativeText = "Fast Mission Control will start automatically after you log in. You can disable this later from Settings or the menu bar."
+            alert.addButton(withTitle: "Enable")
+            alert.addButton(withTitle: "Cancel")
+
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
 
-        _ = NSApp.setActivationPolicy(.accessory)
+        do {
+            try launchAtLoginService.apply(enabled: enabled)
+            settings.set(enabled, for: .launchAtLogin)
+            lastStatus = enabled ? "Launch at Login enabled." : "Launch at Login disabled."
+        } catch {
+            lastStatus = error.localizedDescription
+        }
+    }
+
+    /// Set by AppDelegate; returns the lazily-created settings window so the model doesn't need to
+    /// know how it's constructed.
+    var controlWindowProvider: (() -> NSWindow?)?
+
+    func hideControlWindow() {
+        controlWindowProvider?()?.orderOut(nil)
         NSApp.deactivate()
     }
 
     @discardableResult
     func showControlWindow() -> Bool {
-        _ = NSApp.setActivationPolicy(.regular)
-
-        guard let window = preferredControlWindow else {
+        guard let window = controlWindowProvider?() else {
             NSApp.activate(ignoringOtherApps: true)
             return false
         }
-
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         return true
@@ -249,16 +291,6 @@ final class AppModel: ObservableObject {
 
     func closeOverview() {
         dismissOverviewImmediately(triggerDescription: "Immediate close")
-    }
-
-    private var controlWindows: [NSWindow] {
-        NSApp.windows.filter { window in
-            !(window is NSPanel)
-        }
-    }
-
-    private var preferredControlWindow: NSWindow? {
-        controlWindows.first(where: \.isVisible) ?? controlWindows.first
     }
 
     // MARK: - Show
@@ -462,39 +494,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Desktop
-
-    private func showDesktop() {
-        let visibleApps = NSWorkspace.shared.runningApplications.filter {
-            !$0.isTerminated && !$0.isHidden && $0.activationPolicy == .regular
-        }
-
-        desktopHiddenPIDs = Set(visibleApps.map(\.processIdentifier))
-
-        for app in visibleApps {
-            app.hide()
-        }
-
-        dismissOverviewImmediately(triggerDescription: "Show desktop")
-    }
-
-    private func restoreDesktopIfNeeded() {
-        guard !desktopHiddenPIDs.isEmpty else { return }
-
-        let pidsToRestore = desktopHiddenPIDs
-        desktopHiddenPIDs = []
-
-        for app in NSWorkspace.shared.runningApplications {
-            guard pidsToRestore.contains(app.processIdentifier), !app.isTerminated else { continue }
-            app.unhide()
-        }
-    }
-
     // MARK: - Controller Factory
 
     private func makeOverviewController(snapshot: OverviewSnapshot) -> OverviewWindowController {
         OverviewWindowController(
             snapshot: snapshot,
+            layoutEngine: layoutEngine,
+            matchAllWords: settings.searchMatchAllWords,
+            hideNonMatches: settings.searchHideNonMatches,
+            confirmWindowClose: settings.confirmWindowClose,
             onDismiss: { [weak self] in
                 guard let self else { return }
                 self.resumePreviewUpdatesTask?.cancel()
@@ -556,6 +564,13 @@ final class AppModel: ObservableObject {
                     )
                 }
             },
+            onWindowCloseRequested: { [weak self] descriptor in
+                guard let self else { return }
+                if !self.activationService.closeWindow(descriptor: descriptor) {
+                    self.lastStatus = "Could not safely identify that window to close it."
+                }
+                // The live-refresh loop detects a successful close and fades its card.
+            },
             onShelfItemSelected: { [weak self] item in
                 guard let self else { return }
                 self.activationService.activateAppFast(pid: item.pid)
@@ -574,6 +589,34 @@ final class AppModel: ObservableObject {
                 self.dismissOverviewImmediately(triggerDescription: "New window")
             }
         )
+    }
+
+    // MARK: - Desktop
+
+    private func showDesktop() {
+        let visibleApps = NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated && !$0.isHidden && $0.activationPolicy == .regular
+        }
+
+        desktopHiddenPIDs = Set(visibleApps.map(\.processIdentifier))
+
+        for app in visibleApps {
+            app.hide()
+        }
+
+        dismissOverviewImmediately(triggerDescription: "Show desktop")
+    }
+
+    private func restoreDesktopIfNeeded() {
+        guard !desktopHiddenPIDs.isEmpty else { return }
+
+        let pidsToRestore = desktopHiddenPIDs
+        desktopHiddenPIDs = []
+
+        for app in NSWorkspace.shared.runningApplications {
+            guard pidsToRestore.contains(app.processIdentifier), !app.isTerminated else { continue }
+            app.unhide()
+        }
     }
 
     // MARK: - Trigger Monitor
@@ -799,8 +842,10 @@ final class AppModel: ObservableObject {
             lastStatus = "Accessibility is required."
         } else if isOverviewVisible {
             lastStatus = "Overview open."
+        } else if let hotkeyStartupError {
+            lastStatus = "Ready with mouse trigger. Option+Tab is unavailable: \(hotkeyStartupError)"
         } else {
-            lastStatus = "Ready. Mouse button \(settings.toggleButtonNumber + 1) toggles the overview."
+            lastStatus = "Ready. Mouse button \(settings.toggleButtonNumber + 1) or Option+Tab toggles the overview."
         }
     }
 
@@ -808,9 +853,18 @@ final class AppModel: ObservableObject {
         triggerMonitor.toggleButtonNumber = Int64(settings.toggleButtonNumber)
         updateStatus()
         updatePrewarmLoop()
+        applyLaunchAtLogin()
 
         if isOverviewVisible {
             startLiveRefresh()
+        }
+    }
+
+    private func applyLaunchAtLogin() {
+        do {
+            try launchAtLoginService.apply(enabled: settings.launchAtLogin)
+        } catch {
+            lastStatus = error.localizedDescription
         }
     }
 

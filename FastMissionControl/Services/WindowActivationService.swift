@@ -106,6 +106,34 @@ final class WindowActivationService {
         _ = AXUIElementPerformAction(best.element, kAXRaiseAction as CFString)
     }
 
+    /// Close the descriptor's window via its AX close button. Returns true if a press action was dispatched.
+    @discardableResult
+    func closeWindow(descriptor: WindowDescriptor) -> Bool {
+        guard windowStillBelongsToExpectedProcess(descriptor) else { return false }
+
+        let handles = loadAXWindows(for: descriptor.pid)
+        guard let handle = matcher.strictMatch(
+            title: descriptor.title,
+            appKitBounds: descriptor.appKitBounds,
+            candidates: handles
+        ) else {
+            return false
+        }
+
+        var closeButton: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            handle.element,
+            kAXCloseButtonAttribute as CFString,
+            &closeButton
+        )
+        guard status == .success, let closeButton, CFGetTypeID(closeButton) == AXUIElementGetTypeID() else {
+            return false
+        }
+
+        let element = closeButton as! AXUIElement
+        return AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+    }
+
     /// Resolve and raise the first restorable shelf window.
     func raiseSpecificWindow(shelfItem item: AppShelfItem) {
         guard let handle = item.restorableWindows.first else { return }
@@ -130,6 +158,20 @@ final class WindowActivationService {
     private func resolveWindowHandle(for descriptor: WindowDescriptor) -> AXWindowHandle? {
         let handles = loadAXWindows(for: descriptor.pid)
         return matcher.match(title: descriptor.title, appKitBounds: descriptor.appKitBounds, candidates: handles)
+    }
+
+    private func windowStillBelongsToExpectedProcess(_ descriptor: WindowDescriptor) -> Bool {
+        guard let info = cgWindowInfo(for: descriptor.id),
+              let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber,
+              pid_t(ownerPID.int32Value) == descriptor.pid else {
+            return false
+        }
+
+        guard let expectedBundleIdentifier = descriptor.bundleIdentifier else {
+            return true
+        }
+
+        return NSRunningApplication(processIdentifier: descriptor.pid)?.bundleIdentifier == expectedBundleIdentifier
     }
 
     private func loadAXWindows(for pid: pid_t) -> [AXWindowHandle] {
@@ -191,12 +233,18 @@ final class WindowActivationService {
 
     /// Look up the Quartz frame for a specific CGWindowID.
     private func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]],
-              let info = list.first,
+        guard let info = cgWindowInfo(for: windowID),
               let boundsDict = info[kCGWindowBounds as String] as? [String: Any] else {
             return nil
         }
         return CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
+    }
+
+    private func cgWindowInfo(for windowID: CGWindowID) -> [String: Any]? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]] else {
+            return nil
+        }
+        return list.first
     }
 
     /// Pick the AX handle whose frame is closest to the given Quartz frame.

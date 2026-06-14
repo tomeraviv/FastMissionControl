@@ -7,9 +7,47 @@
 
 import Testing
 import AppKit
+import ApplicationServices
 @testable import FastMissionControl
 
 struct FastMissionControlTests {
+
+    @Test func launchAtLoginDefaultsOff() {
+        let settings = makeIsolatedSettings(testName: #function)
+        #expect(settings.launchAtLogin == false)
+    }
+
+    @Test func strictWindowMatchRequiresUniqueTitleAndFrame() {
+        let matcher = AXWindowMatcher()
+        let targetFrame = CGRect(x: 100, y: 200, width: 800, height: 600)
+        let expected = makeAXWindowHandle(title: "Document", frame: targetFrame)
+
+        #expect(
+            matcher.strictMatch(
+                title: "Document",
+                appKitBounds: targetFrame,
+                candidates: [expected]
+            ) === expected
+        )
+
+        let wrongTitle = makeAXWindowHandle(title: "Other Document", frame: targetFrame)
+        #expect(
+            matcher.strictMatch(
+                title: "Document",
+                appKitBounds: targetFrame,
+                candidates: [wrongTitle]
+            ) == nil
+        )
+
+        let duplicate = makeAXWindowHandle(title: "Document", frame: targetFrame)
+        #expect(
+            matcher.strictMatch(
+                title: "Document",
+                appKitBounds: targetFrame,
+                candidates: [expected, duplicate]
+            ) == nil
+        )
+    }
 
     @Test func secondaryDisplayClusteredWindowsSpreadAcrossColumns() {
         let settings = makeIsolatedSettings(testName: #function)
@@ -121,6 +159,15 @@ struct FastMissionControlTests {
         #expect(verticalFill > 0.82)
     }
 
+}
+
+private func makeAXWindowHandle(title: String?, frame: CGRect) -> AXWindowHandle {
+    AXWindowHandle(
+        element: AXUIElementCreateSystemWide(),
+        title: title,
+        frame: frame,
+        isMinimized: false
+    )
 }
 
 private func makeIsolatedSettings(testName: String) -> AppSettings {

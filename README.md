@@ -25,6 +25,7 @@ https://tomeraviv.github.io/FastMissionControl/
 - Shows still and low-FPS live previews for windows.
 - Includes a desktop action and app shelf behavior.
 - Fixes decade old known Mission Control bug where closing / opening windows while animating cause ghost selector boxes and layout shifts
+- Runs as a menu-bar agent, with an optional user-confirmed Launch at Login setting.
 
 ## Status
 
@@ -43,7 +44,7 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 ## Still Missing
 
-- [ ] Global keyboard shortcuts / hotkeys
+- [x] Global keyboard shortcuts / hotkeys
 - [ ] Add Metal rendering for faster performance
 - [ ] Clean up main interface
 - [ ] Fix missing preview cache on first open & fast re-opens

@@ -32,6 +32,10 @@ final class OverviewDisplayView: NSView {
     var onHoverChanged: ((CGWindowID?) -> Void)?
     var onBackgroundClick: (() -> Void)?
     var onWindowSelected: ((WindowDescriptor, Bool) -> Void)?
+    var onWindowCloseRequested: ((WindowDescriptor) -> Void)?
+    var onCloseConfirmationDecided: ((Bool) -> Void)?
+    var onSearchTextChanged: ((String) -> Void)?
+    var onSearchCommand: ((Selector) -> Bool)?
     var onShelfItemSelected: ((AppShelfItem) -> Void)?
     var onDesktopRequested: (() -> Void)?
     var onNewWindowSelected: ((CGWindowID, pid_t) -> Void)?
@@ -58,11 +62,21 @@ final class OverviewDisplayView: NSView {
     private var trackingAreaRef: NSTrackingArea?
     private var hoveredWindowID: CGWindowID?
     private var isExpanded = false
+    /// Mid-open, the title chip and card body sit in different places, so the focus halo would
+    /// render split. Suppress halo updates until the open animation lands.
+    private var hasFinishedExpanding = false
     private var mouseIdleTimer: Timer?
     private var goneWindowIDs: Set<CGWindowID> = []
     private var previewUpdatesSuspended = false
+    private var filterMatchingWindowIDs: Set<CGWindowID>?
+    /// When true, non-matching cards are hidden (and skipped for hit-testing) rather than dimmed.
+    private var filterHidesNonMatches = false
+    private var searchPill: SearchPillView?
+    private var confirmationChip: ConfirmationChipView?
+    private var confirmationDescriptor: WindowDescriptor?
     /// Window hit on mouseDown; selection runs on mouseUp only when no drag occurred.
     private var pendingWindowSelect: WindowDescriptor?
+    private var pendingCloseDescriptor: WindowDescriptor?
     private var pendingWindowSelectOrigin: CGPoint?
     private var pendingWindowSelectDidDrag = false
     private var lastDragLocalPoint: CGPoint?
@@ -129,6 +143,7 @@ final class OverviewDisplayView: NSView {
         buildWindowLayers()
         buildShelfButtonsIfNeeded()
         buildDesktopButtonIfNeeded()
+        buildSearchPillIfNeeded()
     }
 
     @available(*, unavailable)
@@ -170,6 +185,8 @@ final class OverviewDisplayView: NSView {
         wallpaperLayer.frame = bounds
         backgroundDimLayer.frame = bounds
         layoutBottomRow()
+        layoutSearchPill()
+        layoutConfirmationChip()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -198,6 +215,15 @@ final class OverviewDisplayView: NSView {
         let localPoint = convert(event.locationInWindow, from: nil)
 
         guard isExpanded else {
+            return
+        }
+
+        if let descriptor = hitTestCloseButton(at: localPoint) {
+            pendingCloseDescriptor = descriptor
+            pendingWindowSelect = nil
+            pendingWindowSelectOrigin = nil
+            pendingWindowSelectDidDrag = false
+            lastDragLocalPoint = nil
             return
         }
 
@@ -265,6 +291,7 @@ final class OverviewDisplayView: NSView {
     override func mouseUp(with event: NSEvent) {
         let didDrag = pendingWindowSelectDidDrag
         let descriptorForDrag = pendingWindowSelect
+        let closeDescriptor = pendingCloseDescriptor
 
         defer {
             if didDrag {
@@ -277,17 +304,23 @@ final class OverviewDisplayView: NSView {
             pendingWindowSelectOrigin = nil
             pendingWindowSelectDidDrag = false
             lastDragLocalPoint = nil
+            pendingCloseDescriptor = nil
         }
 
-        guard isExpanded, let descriptor = descriptorForDrag else {
-            return
-        }
-
-        if didDrag {
-            return
-        }
+        guard isExpanded else { return }
 
         let localPoint = convert(event.locationInWindow, from: nil)
+
+        // A press that began on the ✕ and ended on the same ✕ requests a close.
+        if let closeDescriptor, hitTestCloseButton(at: localPoint)?.id == closeDescriptor.id {
+            onWindowCloseRequested?(closeDescriptor)
+            return
+        }
+
+        guard let descriptor = descriptorForDrag, !didDrag else {
+            return
+        }
+
         guard hitTestWindow(at: localPoint)?.id == descriptor.id else {
             return
         }
@@ -395,6 +428,7 @@ final class OverviewDisplayView: NSView {
         }
 
         isExpanded = true
+        hasFinishedExpanding = false
 
         let titleDuration = max(duration * 1.15, 0)
 
@@ -410,6 +444,13 @@ final class OverviewDisplayView: NSView {
         for cardLayer in cardLayers.values {
             cardLayer.animateToExpanded(duration: duration)
         }
+
+        // Once the cards have landed at their target positions, applying the halo is safe.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(duration, 0)) { [weak self] in
+            guard let self else { return }
+            self.hasFinishedExpanding = true
+            self.applyFocusHaloForCurrentState()
+        }
     }
 
     func animateDismiss(selectedWindowID: CGWindowID?, duration: CFTimeInterval) {
@@ -418,6 +459,7 @@ final class OverviewDisplayView: NSView {
         }
 
         isExpanded = false
+        hasFinishedExpanding = false
         mouseIdleTimer?.invalidate()
         mouseIdleTimer = nil
         if let selectedWindowID {
@@ -450,9 +492,146 @@ final class OverviewDisplayView: NSView {
         hoveredWindowID = windowID
         onHoverChanged?(windowID)
 
+        applyFocusHaloForCurrentState()
+    }
+
+    private func applyFocusHaloForCurrentState() {
+        guard hasFinishedExpanding else { return }
+
         for (cardWindowID, cardLayer) in cardLayers {
-            cardLayer.setHovered(cardWindowID == windowID)
+            cardLayer.setHovered(cardWindowID == hoveredWindowID)
         }
+        for (titleWindowID, titleLayer) in titleLayers {
+            titleLayer.setFocused(titleWindowID == hoveredWindowID)
+        }
+    }
+
+    /// Sets the keyboard-driven focus. Mirrors the same visual treatment as mouse hover so users
+    /// only see one focused card at a time regardless of which input drove it.
+    func setKeyboardSelectedWindow(_ windowID: CGWindowID?) {
+        setHoveredWindow(windowID)
+    }
+
+    /// Hands first-responder back to the window (away from the search field) so x/y/n shortcuts
+    /// resume working after a keyboard navigation step.
+    func resignSearchFocus() {
+        guard let window, window.firstResponder !== window else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    func setFilter(matchingWindowIDs: Set<CGWindowID>?, displayText: String) {
+        filterMatchingWindowIDs = matchingWindowIDs
+        applyFilterDimming()
+
+        // The pill is persistent (always shown on the primary panel) so users see the filter
+        // affordance up front. Just update its content — text or placeholder.
+        searchPill?.setText(displayText)
+        layoutSearchPill()
+    }
+
+    /// Hide mode: the controller has re-laid-out the matching windows, so animate each visible card
+    /// to its new frame and fade the rest out. Hidden cards are skipped for hit-testing.
+    func applyHideFilter(visibleWindowIDs: Set<CGWindowID>, displayText: String) {
+        filterMatchingWindowIDs = visibleWindowIDs
+        filterHidesNonMatches = true
+
+        for descriptor in windowDescriptors {
+            guard !goneWindowIDs.contains(descriptor.id) else { continue }
+            let visible = visibleWindowIDs.contains(descriptor.id)
+            if visible {
+                let cardLocal = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+                let titleLocal = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+                cardLayers[descriptor.id]?.animateToNewFrame(cardLocal, duration: 0.28)
+                titleLayers[descriptor.id]?.animateToNewFrame(titleLocal, duration: 0.28)
+            }
+            cardLayers[descriptor.id]?.setFilteredHidden(!visible)
+            titleLayers[descriptor.id]?.setFilteredHidden(!visible)
+        }
+
+        searchPill?.setText(displayText)
+        layoutSearchPill()
+    }
+
+    private func buildSearchPillIfNeeded() {
+        guard showsShelf else { return }
+        let pill = SearchPillView()
+        pill.wantsLayer = true
+        pill.layer?.zPosition = 90_000
+        pill.onTextChanged = { [weak self] text in
+            self?.onSearchTextChanged?(text)
+        }
+        pill.onCommand = { [weak self] selector in
+            self?.onSearchCommand?(selector) ?? false
+        }
+        addSubview(pill)
+        searchPill = pill
+    }
+
+    private func layoutSearchPill() {
+        guard let searchPill else { return }
+        let pillSize = searchPill.intrinsicContentSize
+        let maxWidth = bounds.width - 80
+        let width = min(pillSize.width, maxWidth)
+        let height = pillSize.height
+
+        // Sit just above the bottom button row (shelf / new windows / desktop button).
+        let bottomRowTop = max(24, bounds.height - 60 - 28)
+        let pillY = max(8, bottomRowTop - height - 14)
+
+        searchPill.frame = CGRect(
+            x: (bounds.width - width) / 2,
+            y: pillY,
+            width: width,
+            height: height
+        )
+    }
+
+    private func applyFilterDimming() {
+        let dimOpacity: Float = 0.10
+        for descriptor in windowDescriptors {
+            let matches = filterMatchingWindowIDs?.contains(descriptor.id) ?? true
+            cardLayers[descriptor.id]?.opacity = matches ? 1.0 : dimOpacity
+            titleLayers[descriptor.id]?.opacity = matches ? 1.0 : dimOpacity * 0.4
+        }
+    }
+
+    /// Each panel renders the prompt only when it's for a window on its display. The chip is
+    /// centered on the card so the card itself communicates which window is closing.
+    func setCloseConfirmation(descriptor: WindowDescriptor?, focusedYes: Bool) {
+        guard let descriptor, descriptor.displayID == display.id else {
+            confirmationDescriptor = nil
+            confirmationChip?.removeFromSuperview()
+            confirmationChip = nil
+            return
+        }
+
+        confirmationDescriptor = descriptor
+        if confirmationChip == nil {
+            let chip = ConfirmationChipView()
+            chip.wantsLayer = true
+            // Cards sit at zPosition 10_000+, titles at 20_000+; the chip must render above both.
+            chip.layer?.zPosition = 100_000
+            chip.onYes = { [weak self] in self?.onCloseConfirmationDecided?(true) }
+            chip.onNo = { [weak self] in self?.onCloseConfirmationDecided?(false) }
+            addSubview(chip)
+            confirmationChip = chip
+        }
+        confirmationChip?.setFocusedYes(focusedYes)
+        layoutConfirmationChip()
+    }
+
+    private func layoutConfirmationChip() {
+        guard let chip = confirmationChip, let descriptor = confirmationDescriptor else { return }
+        let chipSize = chip.intrinsicContentSize
+        let cardLocal = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        let width = min(chipSize.width, max(160, cardLocal.width - 24))
+        let height = chipSize.height
+        chip.frame = CGRect(
+            x: cardLocal.midX - width / 2,
+            y: cardLocal.midY - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     func disableInteractions() {
@@ -500,23 +679,41 @@ final class OverviewDisplayView: NSView {
 
     // MARK: - Live inventory updates
 
-    func markWindowGone(_ windowID: CGWindowID) {
-        guard !goneWindowIDs.contains(windowID) else { return }
-        goneWindowIDs.insert(windowID)
+    /// A window closed (via its ✕ or externally, detected by the live-refresh loop). Fade its card
+    /// out and re-flow the survivors into the freed space — the controller has already recomputed
+    /// each survivor's target frame.
+    func animateRelayout(closedWindowID: CGWindowID, duration: CFTimeInterval) {
+        guard !goneWindowIDs.contains(closedWindowID) else { return }
+        goneWindowIDs.insert(closedWindowID)
 
-        if let card = cardLayers[windowID],
-           let descriptor = windowDescriptors.first(where: { $0.id == windowID }) {
-            card.setGone(true, appIcon: descriptor.iconCGImage)
+        if hoveredWindowID == closedWindowID {
+            hoveredWindowID = nil
+        }
+        cardLayers[closedWindowID]?.setFilteredHidden(true)
+        titleLayers[closedWindowID]?.setFilteredHidden(true)
+
+        animateRelayout(duration: duration)
+    }
+
+    func animateRelayout(duration: CFTimeInterval) {
+        for descriptor in windowDescriptors {
+            guard !goneWindowIDs.contains(descriptor.id) else { continue }
+            if filterHidesNonMatches,
+               filterMatchingWindowIDs?.contains(descriptor.id) == false {
+                continue
+            }
+            let cardLocal = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+            let titleLocal = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+            cardLayers[descriptor.id]?.animateToNewFrame(cardLocal, duration: duration)
+            titleLayers[descriptor.id]?.animateToNewFrame(titleLocal, duration: duration)
         }
     }
 
     func markWindowRestored(_ windowID: CGWindowID) {
         guard goneWindowIDs.contains(windowID) else { return }
         goneWindowIDs.remove(windowID)
-
-        if let card = cardLayers[windowID] {
-            card.setGone(false, appIcon: nil)
-        }
+        cardLayers[windowID]?.setFilteredHidden(false)
+        titleLayers[windowID]?.setFilteredHidden(false)
     }
 
     func addNewWindowIcons(_ icons: [(windowID: CGWindowID, pid: pid_t, appName: String, icon: NSImage)]) {
@@ -812,10 +1009,34 @@ final class OverviewDisplayView: NSView {
         }
     }
 
+    /// The ✕ lives on the title bar and is only hit-active while its card is focused, so a click on
+    /// the corner of an unfocused card doesn't close that window.
+    private func hitTestCloseButton(at localPoint: CGPoint) -> WindowDescriptor? {
+        guard let hoveredWindowID,
+              let descriptor = windowDescriptors.first(where: { $0.id == hoveredWindowID }),
+              !goneWindowIDs.contains(descriptor.id) else {
+            return nil
+        }
+        let titleLocal = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        let xSize = WindowTitleLayer.closeButtonSize
+        let xMargin = WindowTitleLayer.closeButtonMargin
+        let xRect = CGRect(
+            x: titleLocal.maxX - xMargin - xSize,
+            y: titleLocal.minY + (titleLocal.height - xSize) / 2,
+            width: xSize,
+            height: xSize
+        )
+        return xRect.contains(localPoint) ? descriptor : nil
+    }
+
     private func hitTestWindow(at localPoint: CGPoint) -> WindowDescriptor? {
         windowDescriptors.first { descriptor in
             // Skip gone (closed) windows — they're not clickable.
             guard !goneWindowIDs.contains(descriptor.id) else { return false }
+            // In hide mode, non-matching cards are faded out and not clickable.
+            if filterHidesNonMatches, filterMatchingWindowIDs?.contains(descriptor.id) == false {
+                return false
+            }
             let target = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
             let title = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
             return target.union(title).contains(localPoint)
@@ -845,8 +1066,6 @@ private final class WindowCardLayer: CALayer {
     private let targetRect: CGRect
     private let previewLayer = CALayer()
     private let borderLayer = CAShapeLayer()
-    private let goneOverlayLayer = CALayer()
-    private let goneIconLayer = CALayer()
 
     init(descriptor: WindowDescriptor, displayOrigin: CGPoint, displaySupportsEDR: Bool) {
         sourceRect = descriptor.sourceFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
@@ -867,6 +1086,9 @@ private final class WindowCardLayer: CALayer {
 
         previewLayer.contentsGravity = .resizeAspectFill
         previewLayer.cornerRadius = 12
+        // Square the top edge so it meets the title chip above as one continuous shape.
+        // (The flipped parent NSView means maxY-side corners render at the visual bottom.)
+        previewLayer.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
         previewLayer.masksToBounds = true
         previewLayer.minificationFilter = .trilinear
         previewLayer.magnificationFilter = .trilinear
@@ -880,16 +1102,6 @@ private final class WindowCardLayer: CALayer {
         borderLayer.strokeColor = NSColor.clear.cgColor
         borderLayer.lineWidth = 1
         addSublayer(borderLayer)
-
-        // Gone-state layers (hidden by default).
-        goneOverlayLayer.backgroundColor = NSColor.black.withAlphaComponent(0.40).cgColor
-        goneOverlayLayer.cornerRadius = 12
-        goneOverlayLayer.isHidden = true
-        addSublayer(goneOverlayLayer)
-
-        goneIconLayer.contentsGravity = .resizeAspect
-        goneIconLayer.isHidden = true
-        addSublayer(goneIconLayer)
 
         updateGeometry()
     }
@@ -929,24 +1141,11 @@ private final class WindowCardLayer: CALayer {
         CATransaction.commit()
     }
 
-    func setGone(_ gone: Bool, appIcon: CGImage?) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        goneOverlayLayer.isHidden = !gone
-        goneIconLayer.isHidden = !gone
-        if gone, let appIcon {
-            goneIconLayer.contents = appIcon
-        }
-        shadowOpacity = gone ? 0.08 : 0.28
-        CATransaction.commit()
-    }
-
     func clearRetainedContents() {
         removeAllAnimations()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         previewLayer.contents = nil
-        goneIconLayer.contents = nil
         CATransaction.commit()
     }
 
@@ -1017,6 +1216,53 @@ private final class WindowCardLayer: CALayer {
         add(transformAnimation, forKey: "transform")
     }
 
+    /// Animate the card to a new layout-space frame (used when a filter re-layouts the survivors).
+    /// The bounds jump to the final size immediately and a counter-scale transform fakes the visual
+    /// growth/shrink, so the preview renders at full resolution rather than re-decoding mid-flight.
+    func animateToNewFrame(_ newLocal: CGRect, duration: CFTimeInterval) {
+        let newPosition = CGPoint(x: newLocal.midX, y: newLocal.midY)
+        let newSize = newLocal.size
+        let oldPosition = presentation()?.position ?? position
+        let oldSize = bounds.size
+
+        let initialTransform = CATransform3DMakeScale(
+            oldSize.width / max(newSize.width, 1),
+            oldSize.height / max(newSize.height, 1),
+            1
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        bounds = CGRect(origin: .zero, size: newSize)
+        transform = CATransform3DIdentity
+        position = newPosition
+        CATransaction.commit()
+
+        guard duration > 0 else { return }
+
+        let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+
+        let positionAnim = CABasicAnimation(keyPath: "position")
+        positionAnim.fromValue = oldPosition
+        positionAnim.toValue = newPosition
+        positionAnim.duration = duration
+        positionAnim.timingFunction = timing
+
+        let transformAnim = CABasicAnimation(keyPath: "transform")
+        transformAnim.fromValue = initialTransform
+        transformAnim.toValue = CATransform3DIdentity
+        transformAnim.duration = duration
+        transformAnim.timingFunction = timing
+
+        add(positionAnim, forKey: "relayoutPosition")
+        add(transformAnim, forKey: "relayoutTransform")
+    }
+
+    /// Fade the card fully out (filter hides it) or back in, with an implicit cross-fade.
+    func setFilteredHidden(_ hidden: Bool) {
+        opacity = hidden ? 0 : 1
+    }
+
     private var collapsedTransform: CATransform3D {
         CATransform3DMakeScale(
             max(sourceRect.width / max(targetRect.width, 1), 0.01),
@@ -1028,32 +1274,36 @@ private final class WindowCardLayer: CALayer {
     private func updateGeometry() {
         previewLayer.frame = bounds
         borderLayer.frame = bounds
-        goneOverlayLayer.frame = bounds
 
-        let iconSize = min(bounds.width, bounds.height) * 0.35
-        goneIconLayer.frame = CGRect(
-            x: (bounds.width - iconSize) / 2,
-            y: (bounds.height - iconSize) / 2,
-            width: iconSize,
-            height: iconSize
-        )
+        // Border: open at the top — the title chip above draws the matching upper half so the two
+        // pieces fuse into one continuous focus ring at the seam.
+        let r: CGFloat = 12
+        let w = bounds.width
+        let h = bounds.height
+        let borderPath = CGMutablePath()
+        borderPath.move(to: CGPoint(x: 0, y: 0))
+        borderPath.addLine(to: CGPoint(x: 0, y: h - r))
+        borderPath.addQuadCurve(to: CGPoint(x: r, y: h), control: CGPoint(x: 0, y: h))
+        borderPath.addLine(to: CGPoint(x: w - r, y: h))
+        borderPath.addQuadCurve(to: CGPoint(x: w, y: h - r), control: CGPoint(x: w, y: h))
+        borderPath.addLine(to: CGPoint(x: w, y: 0))
+        borderLayer.path = borderPath
 
-        let roundedPath = CGPath(
-            roundedRect: bounds,
-            cornerWidth: 12,
-            cornerHeight: 12,
-            transform: nil
-        )
-        borderLayer.path = roundedPath
-        shadowPath = roundedPath
+        shadowPath = CGPath(roundedRect: bounds, cornerWidth: r, cornerHeight: r, transform: nil)
     }
 }
 
 // MARK: - Window Title
 
 private final class WindowTitleLayer: CALayer {
+    static let closeButtonSize: CGFloat = 26
+    static let closeButtonMargin: CGFloat = 7
+
     private let iconLayer = CALayer()
     private let textLayer = CATextLayer()
+    private let borderLayer = CAShapeLayer()
+    private let closeButtonLayer = CALayer()
+    private let closeGlyphLayer = CAShapeLayer()
     private let appName: String
     private let windowTitle: String?
 
@@ -1066,10 +1316,13 @@ private final class WindowTitleLayer: CALayer {
 
         bounds = CGRect(origin: .zero, size: localFrame.size)
         position = CGPoint(x: localFrame.midX, y: localFrame.midY)
-        cornerRadius = 10
+        cornerRadius = 12
+        maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
-        borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
-        borderWidth = 1
+        // The default per-layer border draws all four sides; the borderLayer below replaces it
+        // with an open-bottom path so it fuses with the card's open-top border at the seam.
+        borderColor = NSColor.clear.cgColor
+        borderWidth = 0
         isHidden = true
         contentsScale = NSScreen.main?.backingScaleFactor ?? 2
 
@@ -1087,7 +1340,37 @@ private final class WindowTitleLayer: CALayer {
         textLayer.contentsScale = contentsScale
         addSublayer(textLayer)
 
+        borderLayer.fillColor = NSColor.clear.cgColor
+        borderLayer.strokeColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        borderLayer.lineWidth = 1
+        addSublayer(borderLayer)
+
+        closeButtonLayer.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        closeButtonLayer.cornerRadius = Self.closeButtonSize / 2
+        closeButtonLayer.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        closeButtonLayer.borderWidth = 1
+        closeButtonLayer.isHidden = true
+        addSublayer(closeButtonLayer)
+
+        closeGlyphLayer.strokeColor = NSColor.white.withAlphaComponent(0.92).cgColor
+        closeGlyphLayer.fillColor = NSColor.clear.cgColor
+        closeGlyphLayer.lineWidth = 1.6
+        closeGlyphLayer.lineCap = .round
+        closeButtonLayer.addSublayer(closeGlyphLayer)
+
         updateGeometry()
+    }
+
+    /// The ✕ is shown only while the card is focused (hover or keyboard selection).
+    func setFocused(_ focused: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        borderLayer.strokeColor = focused
+            ? NSColor.systemBlue.cgColor
+            : NSColor.white.withAlphaComponent(0.10).cgColor
+        borderLayer.lineWidth = focused ? 3 : 1
+        closeButtonLayer.isHidden = !focused
+        CATransaction.commit()
     }
 
     override init(layer: Any) {
@@ -1140,12 +1423,64 @@ private final class WindowTitleLayer: CALayer {
         add(opacityAnimation, forKey: "opacityIn")
     }
 
+    /// Animate the title chip to follow its card to a new layout-space frame (filter re-layout).
+    func animateToNewFrame(_ newLocal: CGRect, duration: CFTimeInterval) {
+        let newPosition = CGPoint(x: newLocal.midX, y: newLocal.midY)
+        let oldPosition = presentation()?.position ?? position
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        position = newPosition
+        bounds = CGRect(origin: .zero, size: newLocal.size)
+        CATransaction.commit()
+
+        guard duration > 0 else { return }
+
+        let positionAnim = CABasicAnimation(keyPath: "position")
+        positionAnim.fromValue = oldPosition
+        positionAnim.toValue = newPosition
+        positionAnim.duration = duration
+        positionAnim.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+        add(positionAnim, forKey: "relayoutPosition")
+    }
+
+    /// Fade the title fully out (filter hides its card) or back in.
+    func setFilteredHidden(_ hidden: Bool) {
+        opacity = hidden ? 0 : 1
+    }
+
     private func updateGeometry() {
         let iconSize: CGFloat = 28
         iconLayer.frame = CGRect(x: 10, y: (bounds.height - iconSize) / 2, width: iconSize, height: iconSize)
+
+        let xSize = Self.closeButtonSize
+        let xMargin = Self.closeButtonMargin
+        closeButtonLayer.frame = CGRect(
+            x: bounds.width - xMargin - xSize,
+            y: (bounds.height - xSize) / 2,
+            width: xSize,
+            height: xSize
+        )
+        let glyphInset: CGFloat = 8
+        let glyphRect = CGRect(
+            x: glyphInset,
+            y: glyphInset,
+            width: xSize - 2 * glyphInset,
+            height: xSize - 2 * glyphInset
+        )
+        let glyphPath = CGMutablePath()
+        glyphPath.move(to: CGPoint(x: glyphRect.minX, y: glyphRect.minY))
+        glyphPath.addLine(to: CGPoint(x: glyphRect.maxX, y: glyphRect.maxY))
+        glyphPath.move(to: CGPoint(x: glyphRect.maxX, y: glyphRect.minY))
+        glyphPath.addLine(to: CGPoint(x: glyphRect.minX, y: glyphRect.maxY))
+        closeGlyphLayer.frame = closeButtonLayer.bounds
+        closeGlyphLayer.path = glyphPath
+
+        // Reserve room on the right for the ✕ so the text doesn't reflow when it appears on focus.
         let textX: CGFloat = 10 + iconSize + 10
+        let textRightInset = xMargin + xSize + 6
         let textHeight: CGFloat = 22
-        let textWidth = max(32, bounds.width - textX - 10)
+        let textWidth = max(32, bounds.width - textX - textRightInset)
         textLayer.frame = CGRect(
             x: textX,
             y: (bounds.height - textHeight) / 2,
@@ -1157,6 +1492,21 @@ private final class WindowTitleLayer: CALayer {
             windowTitle: windowTitle,
             maxWidth: textWidth
         )
+
+        // Inverted-U border: top + sides only, leaving the bottom open to meet the card's
+        // open-top border at the seam. Same corner radius as the card.
+        let r: CGFloat = 12
+        let w = bounds.width
+        let h = bounds.height
+        let borderPath = CGMutablePath()
+        borderPath.move(to: CGPoint(x: 0, y: h))
+        borderPath.addLine(to: CGPoint(x: 0, y: r))
+        borderPath.addQuadCurve(to: CGPoint(x: r, y: 0), control: CGPoint(x: 0, y: 0))
+        borderPath.addLine(to: CGPoint(x: w - r, y: 0))
+        borderPath.addQuadCurve(to: CGPoint(x: w, y: r), control: CGPoint(x: w, y: 0))
+        borderPath.addLine(to: CGPoint(x: w, y: h))
+        borderLayer.frame = bounds
+        borderLayer.path = borderPath
     }
 
     private static func attributedWidth(_ attr: NSAttributedString, height: CGFloat) -> CGFloat {
@@ -1274,6 +1624,292 @@ private final class NewWindowButton: NSButton {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
+    }
+}
+
+// MARK: - Search Pill
+
+/// Persistent search affordance anchored to the bottom of the primary panel. Magnifying glass +
+/// "Type to filter…" placeholder at rest; clicking it (or just typing anywhere) makes it active.
+/// When focused, typing inserts directly into the field; special commands (arrows, Tab, Return,
+/// Escape) are intercepted via NSTextField's `doCommandBy` delegate hook and bubbled back up.
+private final class SearchPillView: NSView, NSTextFieldDelegate {
+    private static let collapsedMinWidth: CGFloat = 200
+    private static let placeholder = "Type to filter…"
+
+    var onTextChanged: ((String) -> Void)?
+    /// Returns true if the controller consumed the command (don't let the field editor process it).
+    var onCommand: ((Selector) -> Bool)?
+
+    private let iconView = NSImageView()
+    private let textField = NSTextField()
+    private let blurView = NSVisualEffectView()
+    private var hasText = false
+    private var isProgrammaticTextChange = false
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 18
+        layer?.masksToBounds = true
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        layer?.borderWidth = 1
+
+        blurView.material = .hudWindow
+        blurView.state = .active
+        blurView.blendingMode = .behindWindow
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(blurView)
+
+        iconView.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Filter")
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        iconView.contentTintColor = NSColor.white.withAlphaComponent(0.60)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(iconView)
+
+        textField.font = .systemFont(ofSize: 13, weight: .medium)
+        textField.textColor = NSColor.white.withAlphaComponent(0.95)
+        textField.isBordered = false
+        textField.isBezeled = false
+        textField.drawsBackground = false
+        textField.backgroundColor = .clear
+        textField.focusRingType = .none
+        textField.isEditable = true
+        textField.isSelectable = true
+        textField.lineBreakMode = .byTruncatingTail
+        textField.delegate = self
+        textField.placeholderAttributedString = NSAttributedString(
+            string: Self.placeholder,
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.45),
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium)
+            ]
+        )
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(textField)
+
+        NSLayoutConstraint.activate([
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+            textField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            textField.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let textWidth = textField.intrinsicContentSize.width
+        let contentWidth = 14 + 16 + 10 + max(40, textWidth) + 14
+        return NSSize(width: max(Self.collapsedMinWidth, contentWidth), height: 36)
+    }
+
+    /// Updates the field's displayed text without firing the change-callback back at the
+    /// controller (avoids a feedback loop when the controller broadcasts a filter update).
+    func setText(_ text: String) {
+        let newHasText = !text.isEmpty
+        hasText = newHasText
+        if textField.stringValue != text {
+            isProgrammaticTextChange = true
+            textField.stringValue = text
+            isProgrammaticTextChange = false
+        }
+        applyVisualState()
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+        superview?.needsLayout = true
+    }
+
+    private func applyVisualState() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if hasText {
+            iconView.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.32).cgColor
+        } else {
+            iconView.contentTintColor = NSColor.white.withAlphaComponent(0.60)
+            layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
+        }
+        CATransaction.commit()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Become first responder so typing flows directly into the field; the field editor
+        // handles the click position (cursor placement, text selection) afterward.
+        window?.makeFirstResponder(textField)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .iBeam)
+    }
+
+    // MARK: - NSTextFieldDelegate
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard !isProgrammaticTextChange else { return }
+        onTextChanged?(textField.stringValue)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        return onCommand?(commandSelector) ?? false
+    }
+}
+
+// MARK: - Confirmation Chip
+
+private final class ConfirmationChipView: NSView {
+    var onYes: (() -> Void)?
+    var onNo: (() -> Void)?
+
+    private let titleLabel = NSTextField(labelWithString: "Close window?")
+    private let yesButton = ConfirmationButton(title: "Yes", style: .destructive)
+    private let noButton = ConfirmationButton(title: "No", style: .defaultAction)
+    private let blurView = NSVisualEffectView()
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.masksToBounds = true
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        layer?.borderWidth = 1
+
+        blurView.material = .hudWindow
+        blurView.state = .active
+        blurView.blendingMode = .behindWindow
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(blurView)
+
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        yesButton.target = self
+        yesButton.action = #selector(handleYes)
+        yesButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(yesButton)
+
+        noButton.target = self
+        noButton.action = #selector(handleNo)
+        noButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(noButton)
+
+        NSLayoutConstraint.activate([
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            yesButton.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 14),
+            yesButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            noButton.leadingAnchor.constraint(equalTo: yesButton.trailingAnchor, constant: 8),
+            noButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            noButton.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+
+        setFocusedYes(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let titleWidth = titleLabel.intrinsicContentSize.width
+        let buttonWidth = yesButton.intrinsicContentSize.width + 8 + noButton.intrinsicContentSize.width
+        return NSSize(width: 16 + titleWidth + 14 + buttonWidth + 10, height: 48)
+    }
+
+    /// Highlight whichever button the keyboard focus sits on (Yes when `true`, else No).
+    func setFocusedYes(_ focusedYes: Bool) {
+        yesButton.setFocused(focusedYes)
+        noButton.setFocused(!focusedYes)
+    }
+
+    /// Swallow clicks on the chip's empty area so the card beneath isn't activated. Clicks on the
+    /// Yes / No buttons hit them first via normal subview hit-testing.
+    override func mouseDown(with event: NSEvent) {}
+
+    @objc
+    private func handleYes() {
+        onYes?()
+    }
+
+    @objc
+    private func handleNo() {
+        onNo?()
+    }
+}
+
+private final class ConfirmationButton: NSButton {
+    enum Style {
+        case defaultAction
+        case destructive
+    }
+
+    private let style: Style
+
+    init(title: String, style: Style) {
+        self.style = style
+        super.init(frame: .zero)
+
+        self.title = title
+        self.isBordered = false
+        self.wantsLayer = true
+        self.contentTintColor = .white
+        self.font = .systemFont(ofSize: 13, weight: .semibold)
+        self.layer?.cornerRadius = 7
+
+        setFocused(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 60, height: 28)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    /// Keep the fill constant on mouse hover / press — only the keyboard focus ring changes the
+    /// look, so the background never flashes the system accent color.
+    override func highlight(_ flag: Bool) {}
+
+    /// Keyboard focus brightens the border (same hue); the fill stays steady.
+    func setFocused(_ focused: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        switch style {
+        case .destructive:
+            layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.30).cgColor
+            layer?.borderColor = NSColor.systemRed.withAlphaComponent(focused ? 0.95 : 0.50).cgColor
+        case .defaultAction:
+            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+            layer?.borderColor = NSColor.white.withAlphaComponent(focused ? 0.95 : 0.45).cgColor
+        }
+        layer?.borderWidth = focused ? 2 : 1
+        CATransaction.commit()
     }
 }
 
