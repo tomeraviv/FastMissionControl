@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
 
     private let triggerMonitor = GlobalTriggerMonitor()
     private let appCache = RunningApplicationCache()
+    private let captureAvailabilityMonitor = CaptureAvailabilityMonitor()
     private let inventoryService: WindowInventoryService
     private let layoutEngine: SpatialOverviewLayout
     private let previewController: WindowPreviewController
@@ -50,6 +51,9 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
+        captureAvailabilityMonitor.start()
+        previewController.setCapturesAllowed(captureAvailabilityMonitor.allowsCapture)
+
         Publishers.CombineLatest(
             permissions.$screenRecordingGranted,
             permissions.$accessibilityGranted
@@ -59,6 +63,13 @@ final class AppModel: ObservableObject {
                 self?.updateTriggerMonitor()
                 self?.updateStatus()
                 self?.updatePrewarmLoop()
+            }
+            .store(in: &cancellables)
+
+        captureAvailabilityMonitor.$allowsCapture
+            .receive(on: RunLoop.main)
+            .sink { [weak self] allowsCapture in
+                self?.handleCaptureAvailabilityChanged(allowsCapture)
             }
             .store(in: &cancellables)
 
@@ -82,6 +93,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        captureAvailabilityMonitor.stop()
         prewarmTask?.cancel()
         prewarmTask = nil
         resumePreviewUpdatesTask?.cancel()
@@ -584,7 +596,9 @@ final class AppModel: ObservableObject {
         prewarmTask?.cancel()
         prewarmTask = nil
 
-        guard permissions.isReady else { return }
+        guard permissions.isReady,
+              captureAvailabilityMonitor.allowsCapture,
+              !isOverviewVisible else { return }
 
         prewarmTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -600,22 +614,42 @@ final class AppModel: ObservableObject {
     /// Background preview cache warmer. Captures still images for
     /// each window so that the next open shows thumbnails instantly.
     private func prewarmPreviewCache() async {
-        guard permissions.isReady, !isOverviewVisible else { return }
+        guard permissions.isReady,
+              captureAvailabilityMonitor.allowsCapture,
+              !isOverviewVisible else { return }
 
         do {
             let snapshot = try inventoryService.snapshotSync()
-            guard !Task.isCancelled, !isOverviewVisible else { return }
+            guard !Task.isCancelled,
+                  captureAvailabilityMonitor.allowsCapture,
+                  !isOverviewVisible else { return }
 
             layoutEngine.apply(to: snapshot)
 
             // Resolve SCWindows (needed for capture).
             await inventoryService.resolveShareableWindows(for: snapshot)
-            guard !Task.isCancelled, !isOverviewVisible else { return }
+            guard !Task.isCancelled,
+                  captureAvailabilityMonitor.allowsCapture,
+                  !isOverviewVisible else { return }
 
             await previewController.prewarm(snapshot: snapshot, forceRefresh: true)
         } catch {
             // Ignore — cache misses are not fatal.
         }
+    }
+
+    private func handleCaptureAvailabilityChanged(_ allowsCapture: Bool) {
+        previewController.setCapturesAllowed(allowsCapture)
+
+        guard !allowsCapture else {
+            if !isOverviewVisible {
+                updatePrewarmLoop()
+            }
+            return
+        }
+
+        prewarmTask?.cancel()
+        prewarmTask = nil
     }
 
     // MARK: - Dismiss

@@ -20,6 +20,20 @@ final class WindowPreviewController {
         let prefersHDR: Bool
     }
 
+    private struct CachedPreviewSignature: Equatable {
+        let windowID: CGWindowID
+        let pid: pid_t
+        let displayID: CGDirectDisplayID
+        let bundleIdentifier: String?
+        let title: String?
+        let frame: CGRect
+    }
+
+    private struct CachedPreview {
+        let image: CGImage
+        let signature: CachedPreviewSignature
+    }
+
     private let settings: AppSettings
     private var snapshot: OverviewSnapshot?
     private var hoveredWindowID: CGWindowID?
@@ -28,9 +42,12 @@ final class WindowPreviewController {
     private var livePreviewsEnabled = false
     private var userInteractingWithOverlay = false
     private var previewUpdatesSuspended = false
-    private var previewCache: [CGWindowID: CGImage] = [:]
+    private var capturesAllowed = true
+    private var previewCache: [CGWindowID: CachedPreview] = [:]
+    private var cachedPreviewWindowIDs: Set<CGWindowID> = []
     private var generation: UInt64 = 0
     private var livePreviewIntervalNanoseconds: UInt64
+    private let maxPreviewCacheEntries = 48
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -45,6 +62,20 @@ final class WindowPreviewController {
         previewUpdatesSuspended = suspended
     }
 
+    func setCapturesAllowed(_ allowed: Bool) {
+        guard capturesAllowed != allowed else {
+            return
+        }
+
+        capturesAllowed = allowed
+
+        if allowed {
+            resumeCaptureWorkIfNeeded()
+        } else {
+            stopCurrentWork()
+        }
+    }
+
     func prepare(snapshot: OverviewSnapshot, startStillLoading: Bool) {
         stopCurrentWork()
         generation &+= 1
@@ -55,20 +86,29 @@ final class WindowPreviewController {
         previewUpdatesSuspended = false
         livePreviewIntervalNanoseconds = defaultLivePreviewIntervalNanoseconds()
 
+        cachedPreviewWindowIDs.removeAll()
+        prunePreviewCache(keeping: snapshot.windows)
         applyCachedPreviews(to: snapshot)
 
-        if startStillLoading {
+        if startStillLoading, capturesAllowed {
             startStillPreviewLoading()
         }
     }
 
     func prewarm(snapshot: OverviewSnapshot, forceRefresh: Bool = false) async {
+        guard capturesAllowed else {
+            return
+        }
+
+        prunePreviewCache(keeping: snapshot.windows)
+
         let priorityWindows = snapshot.windows.sorted { lhs, rhs in
             prewarmPriority(for: lhs, cursorDisplayID: snapshot.cursorDisplayID) > prewarmPriority(for: rhs, cursorDisplayID: snapshot.cursorDisplayID)
         }
+        let cacheableWindows = priorityWindows.prefix(maxPreviewCacheEntries)
 
-        for descriptor in priorityWindows where forceRefresh || previewCache[descriptor.id] == nil {
-            guard !Task.isCancelled else {
+        for descriptor in cacheableWindows where forceRefresh || cachedPreview(for: descriptor) == nil {
+            guard !Task.isCancelled, capturesAllowed else {
                 return
             }
 
@@ -83,7 +123,7 @@ final class WindowPreviewController {
                 continue
             }
 
-            previewCache[descriptor.id] = image
+            cachePreview(image, for: descriptor, preferredWindowIDs: snapshot.windows.map(\.id))
             descriptor.updatePreviewImage(image)
         }
     }
@@ -94,11 +134,15 @@ final class WindowPreviewController {
         }
 
         livePreviewsEnabled = true
+        guard capturesAllowed else {
+            return
+        }
         ensureLiveLoopRunning()
     }
 
     func shareableWindowsDidResolve() {
-        guard livePreviewsEnabled else { return }
+        guard livePreviewsEnabled, capturesAllowed else { return }
+        startStillPreviewLoading()
         ensureLiveLoopRunning()
     }
 
@@ -113,12 +157,13 @@ final class WindowPreviewController {
     }
 
     func startStillPreviewLoading() {
-        guard let snapshot else {
+        guard capturesAllowed,
+              let snapshot else {
             return
         }
 
         let currentGeneration = generation
-        for descriptor in snapshot.windows where descriptor.previewImage == nil && stillTasks[descriptor.id] == nil {
+        for descriptor in snapshot.windows where shouldLoadStillPreview(for: descriptor) {
             stillTasks[descriptor.id] = Task { [weak self] in
                 await self?.loadStillPreview(for: descriptor, generation: currentGeneration)
             }
@@ -146,6 +191,7 @@ final class WindowPreviewController {
     private func runLivePreviewLoop(generation: UInt64) async {
         while !Task.isCancelled {
             guard livePreviewsEnabled,
+                  capturesAllowed,
                   generation == self.generation,
                   let snapshot else {
                 break
@@ -193,7 +239,7 @@ final class WindowPreviewController {
                     continue
                 }
                 descriptor.updatePreviewImage(image)
-                previewCache[descriptor.id] = image
+                cachePreview(image, for: descriptor, preferredWindowIDs: snapshot.windows.map(\.id))
             }
 
             adaptLivePreviewInterval(
@@ -297,13 +343,91 @@ final class WindowPreviewController {
     func applyCachedPreviews(to snapshot: OverviewSnapshot) {
         for descriptor in snapshot.windows {
             if let previewImage = descriptor.previewImage {
-                previewCache[descriptor.id] = previewImage
+                cachePreview(previewImage, for: descriptor, preferredWindowIDs: snapshot.windows.map(\.id))
                 continue
             }
 
-            if let cachedPreview = previewCache[descriptor.id] {
+            if let cachedPreview = cachedPreview(for: descriptor) {
                 descriptor.updatePreviewImage(cachedPreview)
+                cachedPreviewWindowIDs.insert(descriptor.id)
             }
+        }
+        enforcePreviewCacheLimit(preferredWindowIDs: snapshot.windows.map(\.id))
+    }
+
+    private func shouldLoadStillPreview(for descriptor: WindowDescriptor) -> Bool {
+        guard descriptor.shareableWindow != nil,
+              stillTasks[descriptor.id] == nil else {
+            return false
+        }
+
+        return descriptor.previewImage == nil || cachedPreviewWindowIDs.contains(descriptor.id)
+    }
+
+    private func cachedPreview(for descriptor: WindowDescriptor) -> CGImage? {
+        guard let cached = previewCache[descriptor.id] else {
+            return nil
+        }
+
+        guard cached.signature == cacheSignature(for: descriptor) else {
+            previewCache.removeValue(forKey: descriptor.id)
+            cachedPreviewWindowIDs.remove(descriptor.id)
+            return nil
+        }
+
+        return cached.image
+    }
+
+    private func cachePreview(
+        _ image: CGImage,
+        for descriptor: WindowDescriptor,
+        preferredWindowIDs: [CGWindowID]
+    ) {
+        previewCache[descriptor.id] = CachedPreview(
+            image: image,
+            signature: cacheSignature(for: descriptor)
+        )
+        cachedPreviewWindowIDs.remove(descriptor.id)
+        enforcePreviewCacheLimit(preferredWindowIDs: preferredWindowIDs)
+    }
+
+    private func cacheSignature(for descriptor: WindowDescriptor) -> CachedPreviewSignature {
+        CachedPreviewSignature(
+            windowID: descriptor.id,
+            pid: descriptor.pid,
+            displayID: descriptor.displayID,
+            bundleIdentifier: descriptor.bundleIdentifier,
+            title: descriptor.title,
+            frame: descriptor.sourceFrame.integral
+        )
+    }
+
+    private func prunePreviewCache(keeping descriptors: [WindowDescriptor]) {
+        let signaturesByWindowID = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, cacheSignature(for: $0)) })
+        previewCache = previewCache.filter { windowID, cached in
+            signaturesByWindowID[windowID] == cached.signature
+        }
+        cachedPreviewWindowIDs = cachedPreviewWindowIDs.intersection(Set(signaturesByWindowID.keys))
+        enforcePreviewCacheLimit(preferredWindowIDs: descriptors.map(\.id))
+    }
+
+    private func enforcePreviewCacheLimit(preferredWindowIDs: [CGWindowID]) {
+        guard previewCache.count > maxPreviewCacheEntries else {
+            return
+        }
+
+        let preferred = Array(preferredWindowIDs.prefix(maxPreviewCacheEntries))
+        let keep = Set(preferred)
+        previewCache = previewCache.filter { keep.contains($0.key) }
+        cachedPreviewWindowIDs = cachedPreviewWindowIDs.intersection(keep)
+
+        guard previewCache.count > maxPreviewCacheEntries else {
+            return
+        }
+
+        for key in previewCache.keys.sorted().dropFirst(maxPreviewCacheEntries) {
+            previewCache.removeValue(forKey: key)
+            cachedPreviewWindowIDs.remove(key)
         }
     }
 
@@ -367,7 +491,7 @@ final class WindowPreviewController {
     }
 
     private func loadStillPreview(for descriptor: WindowDescriptor, generation: UInt64) async {
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, capturesAllowed else {
             return
         }
 
@@ -384,15 +508,15 @@ final class WindowPreviewController {
         }
 
         guard !Task.isCancelled,
+              capturesAllowed,
               generation == self.generation,
-              !previewUpdatesSuspended,
               snapshot?.windows.contains(where: { $0.id == descriptor.id }) == true else {
             stillTasks.removeValue(forKey: descriptor.id)
             return
         }
 
         descriptor.updatePreviewImage(image)
-        previewCache[descriptor.id] = image
+        cachePreview(image, for: descriptor, preferredWindowIDs: snapshot?.windows.map(\.id) ?? [descriptor.id])
         stillTasks.removeValue(forKey: descriptor.id)
     }
 
@@ -402,6 +526,10 @@ final class WindowPreviewController {
         _ descriptors: [WindowDescriptor],
         maxConcurrentCaptures: Int
     ) async -> [(WindowDescriptor, CGImage)] {
+        guard capturesAllowed else {
+            return []
+        }
+
         let concurrencyLimit = max(1, maxConcurrentCaptures)
 
         return await withTaskGroup(of: (WindowDescriptor, CGImage?).self) { group in
@@ -444,6 +572,9 @@ final class WindowPreviewController {
         let shareableWindow = descriptor.shareableWindow
         let targetFrame = descriptor.targetFrame
         group.addTask {
+            guard !Task.isCancelled else {
+                return (descriptor, nil)
+            }
             let image = await captureOffMainActor(
                 shareableWindow: shareableWindow,
                 targetFrame: targetFrame,
@@ -462,7 +593,8 @@ final class WindowPreviewController {
         longestEdge: CGFloat,
         displayConfiguration: CaptureDisplayConfiguration
     ) async -> CGImage? {
-        guard let shareableWindow else { return nil }
+        guard !Task.isCancelled,
+              let shareableWindow else { return nil }
         let filter = SCContentFilter(desktopIndependentWindow: shareableWindow)
         let configuration = makeScreenshotConfiguration(
             targetFrame: targetFrame,
@@ -534,5 +666,19 @@ final class WindowPreviewController {
 
     private var idlePreviewIntervalNanoseconds: UInt64 {
         settings.idlePreviewIntervalNanoseconds
+    }
+
+    private func resumeCaptureWorkIfNeeded() {
+        guard snapshot != nil else {
+            return
+        }
+
+        startStillPreviewLoading()
+
+        guard livePreviewsEnabled else {
+            return
+        }
+
+        ensureLiveLoopRunning()
     }
 }

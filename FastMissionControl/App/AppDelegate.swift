@@ -10,10 +10,18 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let reopenNotification = Notification.Name("io.github.fastmissioncontrol.reopen-existing-instance")
+    private static let hasCompletedFirstLaunchKey = "io.github.fastmissioncontrol.hasCompletedFirstLaunch"
+
+    private enum StartupWindowBehavior {
+        case show
+        case hide
+    }
 
     let settings = AppSettings()
     lazy var appModel = AppModel(settings: settings)
     private var reopenObserver: Any?
+    private var startupWindowObserver: Any?
+    private var startupWindowBehavior: StartupWindowBehavior?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerReopenObserver()
@@ -25,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         _ = NSApp.setActivationPolicy(.regular)
         appModel.start()
+        applyStartupWindowBehavior()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -40,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DistributedNotificationCenter.default().removeObserver(reopenObserver)
             self.reopenObserver = nil
         }
+
+        removeStartupWindowObserver()
 
         appModel.shutdown()
     }
@@ -91,5 +102,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         return true
+    }
+
+    private func applyStartupWindowBehavior() {
+        let defaults = UserDefaults.standard
+        let isFirstLaunch = !defaults.bool(forKey: Self.hasCompletedFirstLaunchKey)
+        defaults.set(true, forKey: Self.hasCompletedFirstLaunchKey)
+
+        let behavior: StartupWindowBehavior = (isFirstLaunch || !appModel.permissions.isReady) ? .show : .hide
+        startupWindowBehavior = behavior
+        installStartupWindowObserverIfNeeded()
+
+        switch behavior {
+        case .show:
+            if appModel.showControlWindow() {
+                removeStartupWindowObserver()
+            }
+        case .hide:
+            appModel.hideControlWindow()
+        }
+    }
+
+    private func installStartupWindowObserverIfNeeded() {
+        guard startupWindowObserver == nil else {
+            return
+        }
+
+        startupWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated { [weak self] in
+                guard let self,
+                      let window = notification.object as? NSWindow,
+                      !(window is NSPanel) else {
+                    return
+                }
+
+                switch self.startupWindowBehavior {
+                case .show:
+                    _ = self.appModel.showControlWindow()
+                case .hide:
+                    self.appModel.hideControlWindow()
+                case nil:
+                    return
+                }
+
+                self.removeStartupWindowObserver()
+            }
+        }
+    }
+
+    private func removeStartupWindowObserver() {
+        if let startupWindowObserver {
+            NotificationCenter.default.removeObserver(startupWindowObserver)
+            self.startupWindowObserver = nil
+        }
+
+        startupWindowBehavior = nil
     }
 }

@@ -468,6 +468,11 @@ final class OverviewDisplayView: NSView {
         mouseIdleTimer?.invalidate()
         mouseIdleTimer = nil
         previewObservers.removeAll()
+
+        for cardLayer in cardLayers.values {
+            cardLayer.clearRetainedContents()
+        }
+        wallpaperLayer.contents = nil
     }
 
     private var wallpaperIsOpaque = false
@@ -933,6 +938,15 @@ private final class WindowCardLayer: CALayer {
             goneIconLayer.contents = appIcon
         }
         shadowOpacity = gone ? 0.08 : 0.28
+        CATransaction.commit()
+    }
+
+    func clearRetainedContents() {
+        removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        previewLayer.contents = nil
+        goneIconLayer.contents = nil
         CATransaction.commit()
     }
 
