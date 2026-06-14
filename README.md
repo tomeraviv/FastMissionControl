@@ -44,7 +44,7 @@ This repo is publishable as an open-source alpha. The app builds locally in Xcod
 
 ## Still Missing
 
-- [x] Global keyboard shortcuts / hotkeys - Thanks to ![chris-peterson](https://github.com/chris-peterson)! 
+- [x] Global keyboard shortcuts / hotkeys. (Thanks to ![chris-peterson](https://github.com/chris-peterson)! 🙌🏼)
 - [ ] Add Metal rendering for faster performance
 - [ ] Clean up main interface
 - [ ] Fix missing preview cache on first open & fast re-opens
