@@ -24,6 +24,20 @@ final class PermissionCoordinator: ObservableObject {
         accessibilityGranted = AXIsProcessTrustedWithOptions(nil)
     }
 
+    func refreshInBackground() {
+        Task { [weak self] in
+            let permissions = await Task.detached(priority: .utility) {
+                (
+                    screenRecording: CGPreflightScreenCaptureAccess(),
+                    accessibility: AXIsProcessTrustedWithOptions(nil)
+                )
+            }.value
+
+            self?.screenRecordingGranted = permissions.screenRecording
+            self?.accessibilityGranted = permissions.accessibility
+        }
+    }
+
     func requestScreenRecording() {
         _ = CGRequestScreenCaptureAccess()
         refresh()

@@ -9,8 +9,11 @@ import SwiftUI
 import Foundation
 
 struct ContentView: View {
+    private static let sectionCount = 4
+
     @ObservedObject var model: AppModel
     @ObservedObject private var settings: AppSettings
+    @State private var visibleSectionCount = 0
 
     init(model: AppModel) {
         self.model = model
@@ -31,120 +34,139 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        PermissionRow(
-                            title: "Screen Recording",
-                            isGranted: model.permissions.screenRecordingGranted,
-                            buttonTitle: "Request",
-                            action: model.requestScreenRecording
-                        )
-                        PermissionRow(
-                            title: "Accessibility",
-                            isGranted: model.permissions.accessibilityGranted,
-                            buttonTitle: "Request",
-                            action: model.requestAccessibility
-                        )
+                if visibleSectionCount >= 1 {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 14) {
+                            PermissionRow(
+                                title: "Screen Recording",
+                                isGranted: model.permissions.screenRecordingGranted,
+                                buttonTitle: "Request",
+                                action: model.requestScreenRecording
+                            )
+                            PermissionRow(
+                                title: "Accessibility",
+                                isGranted: model.permissions.accessibilityGranted,
+                                buttonTitle: "Request",
+                                action: model.requestAccessibility
+                            )
+                        }
+                        .padding(12)
+                    } label: {
+                        Text("Permissions")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    .padding(12)
-                } label: {
-                    Text("Permissions")
-                        .font(.system(size: 13, weight: .semibold))
                 }
 
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        LabeledContent("Overview") {
-                            Text(model.isOverviewVisible ? "Open" : "Closed")
-                        }
-                        LabeledContent("Status") {
-                            Text(model.lastStatus)
-                                .multilineTextAlignment(.trailing)
-                        }
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Latest Open Timings")
-                                Spacer()
-                                Text(model.latestOverviewOpenMetrics.triggerDescription)
-                                    .foregroundStyle(.secondary)
+                if visibleSectionCount >= 2 {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            LabeledContent("Overview") {
+                                Text(model.isOverviewVisible ? "Open" : "Closed")
+                            }
+                            LabeledContent("Status") {
+                                Text(model.lastStatus)
+                                    .multilineTextAlignment(.trailing)
                             }
 
-                            if model.latestOverviewOpenMetrics.entries.isEmpty {
-                                Text("Open the overview to record timings.")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(model.latestOverviewOpenMetrics.entries) { entry in
-                                    LabeledContent(entry.label) {
-                                        Text(Self.formatTiming(entry.milliseconds))
-                                            .monospacedDigit()
-                                            .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Latest Open Timings")
+                                    Spacer()
+                                    Text(model.latestOverviewOpenMetrics.triggerDescription)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                if model.latestOverviewOpenMetrics.entries.isEmpty {
+                                    Text("Open the overview to record timings.")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(model.latestOverviewOpenMetrics.entries) { entry in
+                                        LabeledContent(entry.label) {
+                                            Text(Self.formatTiming(entry.milliseconds))
+                                                .monospacedDigit()
+                                                .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Divider()
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Latest Close Timings")
+                                    Spacer()
+                                    Text(model.latestOverviewCloseMetrics.triggerDescription)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                if model.latestOverviewCloseMetrics.entries.isEmpty {
+                                    Text("Close the overview to record timings.")
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(model.latestOverviewCloseMetrics.entries) { entry in
+                                        LabeledContent(entry.label) {
+                                            Text(Self.formatTiming(entry.milliseconds))
+                                                .monospacedDigit()
+                                                .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
+                                        }
                                     }
                                 }
                             }
                         }
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Latest Close Timings")
-                                Spacer()
-                                Text(model.latestOverviewCloseMetrics.triggerDescription)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            if model.latestOverviewCloseMetrics.entries.isEmpty {
-                                Text("Close the overview to record timings.")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                ForEach(model.latestOverviewCloseMetrics.entries) { entry in
-                                    LabeledContent(entry.label) {
-                                        Text(Self.formatTiming(entry.milliseconds))
-                                            .monospacedDigit()
-                                            .foregroundStyle(entry.milliseconds == nil ? .secondary : .primary)
-                                    }
-                                }
-                            }
-                        }
+                        .font(.system(size: 13))
+                        .padding(12)
+                    } label: {
+                        Text("State")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    .font(.system(size: 13))
-                    .padding(12)
-                } label: {
-                    Text("State")
-                        .font(.system(size: 13, weight: .semibold))
                 }
 
-                SettingsBox(
-                    settings: model.settings,
-                    onLaunchAtLoginChanged: { enabled in
-                        model.requestLaunchAtLoginChange(enabled: enabled)
-                    }
-                )
+                if visibleSectionCount >= 3 {
+                    SettingsBox(
+                        settings: model.settings,
+                        onLaunchAtLoginChanged: { enabled in
+                            model.requestLaunchAtLoginChange(enabled: enabled)
+                        }
+                    )
+                }
 
-                HStack(spacing: 12) {
-                    Button(model.isOverviewVisible ? "Close Overview" : "Open Overview") {
-                        model.toggleOverview()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.permissions.isReady)
+                if visibleSectionCount >= 4 {
+                    HStack(spacing: 12) {
+                        Button(model.isOverviewVisible ? "Close Overview" : "Open Overview") {
+                            model.toggleOverview()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.permissions.isReady)
 
-                    Button("Refresh Permissions") {
-                        model.refreshPermissions()
-                    }
-                    .buttonStyle(.bordered)
+                        Button("Refresh Permissions") {
+                            model.refreshPermissions()
+                        }
+                        .buttonStyle(.bordered)
 
-                    Button("Hide") {
-                        model.hideControlWindow()
+                        Button("Hide") {
+                            model.hideControlWindow()
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
+                }
+
+                if visibleSectionCount < Self.sectionCount {
+                    ProgressView("Loading settings…")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
                 }
             }
             .padding(24)
         }
         .frame(minWidth: 640, minHeight: 720)
+        .task {
+            await revealItems(from: visibleSectionCount, total: Self.sectionCount) { count in
+                visibleSectionCount = count
+            }
+        }
     }
 
     private static func formatTiming(_ milliseconds: Double?) -> String {
@@ -177,6 +199,13 @@ private struct SettingsBox: View {
     @ObservedObject var settings: AppSettings
     let onLaunchAtLoginChanged: (Bool) -> Void
     @State private var isExpanded = false
+    @State private var visibleSettingCount = 0
+
+    private var settingCount: Int {
+        settings.sections.reduce(0) { count, section in
+            count + settings.definitions(in: section).count
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -204,32 +233,57 @@ private struct SettingsBox: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(settings.sections.enumerated()), id: \.element) { index, section in
-                        if index > 0 {
-                            Divider()
-                                .padding(.horizontal, 12)
-                        }
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(section.uppercased())
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.tertiary)
-                                .tracking(0.5)
+                    let visibleKeys = Set(
+                        settings.sections
+                            .flatMap { settings.definitions(in: $0) }
+                            .prefix(visibleSettingCount)
+                            .map(\.key)
+                    )
 
-                            ForEach(settings.definitions(in: section)) { definition in
-                                SettingControlRow(
-                                    settings: settings,
-                                    definition: definition,
-                                    onLaunchAtLoginChanged: onLaunchAtLoginChanged
-                                )
-                            }
+                    ForEach(Array(settings.sections.enumerated()), id: \.element) { index, section in
+                        let visibleDefinitions = settings.definitions(in: section).filter {
+                            visibleKeys.contains($0.key)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
+
+                        if !visibleDefinitions.isEmpty {
+                            if index > 0 {
+                                Divider()
+                                    .padding(.horizontal, 12)
+                            }
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(section.uppercased())
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                                    .tracking(0.5)
+
+                                ForEach(visibleDefinitions) { definition in
+                                    SettingControlRow(
+                                        settings: settings,
+                                        definition: definition,
+                                        onLaunchAtLoginChanged: onLaunchAtLoginChanged
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 12)
+                        }
+                    }
+
+                    if visibleSettingCount < settingCount {
+                        ProgressView("Loading controls…")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(12)
                     }
                 }
                 .transaction { transaction in
                     transaction.animation = nil
                 }
+            }
+        }
+        .task(id: isExpanded) {
+            guard isExpanded else { return }
+            await revealItems(from: visibleSettingCount, total: settingCount) { count in
+                visibleSettingCount = count
             }
         }
         .background(
@@ -241,6 +295,16 @@ private struct SettingsBox: View {
                 .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+@MainActor
+private func revealItems(from currentCount: Int, total: Int, update: (Int) -> Void) async {
+    guard currentCount < total else { return }
+    for count in (currentCount + 1)...total {
+        guard !Task.isCancelled else { return }
+        update(count)
+        try? await Task.sleep(nanoseconds: 25_000_000)
     }
 }
 

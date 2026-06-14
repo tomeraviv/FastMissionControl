@@ -133,6 +133,10 @@ final class AppModel: ObservableObject {
         updateStatus()
     }
 
+    func refreshPermissionsInBackground() {
+        permissions.refreshInBackground()
+    }
+
     func requestScreenRecording() {
         permissions.requestScreenRecording()
         lastStatus = "Screen Recording prompt requested. Re-open the app after granting if macOS keeps access pending."
@@ -566,10 +570,12 @@ final class AppModel: ObservableObject {
             },
             onWindowCloseRequested: { [weak self] descriptor in
                 guard let self else { return }
+
+                self.overviewController?.markWindowClosing(descriptor.id)
                 if !self.activationService.closeWindow(descriptor: descriptor) {
+                    self.overviewController?.markWindowCloseFailed(descriptor.id)
                     self.lastStatus = "Could not safely identify that window to close it."
                 }
-                // The live-refresh loop detects a successful close and fades its card.
             },
             onShelfItemSelected: { [weak self] item in
                 guard let self else { return }

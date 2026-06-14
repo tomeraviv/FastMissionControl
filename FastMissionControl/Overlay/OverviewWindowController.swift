@@ -25,6 +25,7 @@ final class OverviewWindowController {
     private let matchAllWords: Bool
     private let hideNonMatches: Bool
     private var goneWindowIDs: Set<CGWindowID> = []
+    private var closingWindowIDs: Set<CGWindowID> = []
     private var hoveredWindowID: CGWindowID?
     private var selectedWindowID: CGWindowID?
     private var filterText: String = ""
@@ -166,8 +167,33 @@ final class OverviewWindowController {
 
     // MARK: - Live inventory updates
 
+    func markWindowClosing(_ windowID: CGWindowID) {
+        guard !goneWindowIDs.contains(windowID), closingWindowIDs.insert(windowID).inserted else {
+            return
+        }
+
+        for panelController in panelControllers {
+            panelController.setWindowClosing(windowID, closing: true)
+        }
+
+        if hoveredWindowID == windowID {
+            setHoveredWindow(nil)
+        }
+        if selectedWindowID == windowID {
+            setSelectedWindow(candidateWindows().min(by: { $0.zIndex < $1.zIndex })?.id)
+        }
+    }
+
+    func markWindowCloseFailed(_ windowID: CGWindowID) {
+        guard closingWindowIDs.remove(windowID) != nil else { return }
+        for panelController in panelControllers {
+            panelController.setWindowClosing(windowID, closing: false)
+        }
+    }
+
     func markWindowGone(_ windowID: CGWindowID) {
         guard !goneWindowIDs.contains(windowID) else { return }
+        closingWindowIDs.remove(windowID)
         goneWindowIDs.insert(windowID)
 
         let matching = matchingWindowIDs()
@@ -396,6 +422,7 @@ final class OverviewWindowController {
         let tokens = filterTokens(filterText)
         return allWindowDescriptors.filter { descriptor in
             guard !goneWindowIDs.contains(descriptor.id) else { return false }
+            guard !closingWindowIDs.contains(descriptor.id) else { return false }
             return windowMatches(descriptor, tokens: tokens)
         }
     }
@@ -499,7 +526,8 @@ final class OverviewWindowController {
     private func activateSelected(slowAnimation: Bool) {
         guard let windowID = selectedWindowID,
               let descriptor = allWindowDescriptors.first(where: { $0.id == windowID }),
-              !goneWindowIDs.contains(windowID) else {
+              !goneWindowIDs.contains(windowID),
+              !closingWindowIDs.contains(windowID) else {
             return
         }
         onWindowSelected(descriptor, slowAnimation)
@@ -710,6 +738,10 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
 
     func markWindowRestored(_ windowID: CGWindowID) {
         overlayView.markWindowRestored(windowID)
+    }
+
+    func setWindowClosing(_ windowID: CGWindowID, closing: Bool) {
+        overlayView.setWindowClosing(windowID, closing: closing)
     }
 
     func addNewWindowIcons(_ icons: [(windowID: CGWindowID, pid: pid_t, appName: String, icon: NSImage)]) {

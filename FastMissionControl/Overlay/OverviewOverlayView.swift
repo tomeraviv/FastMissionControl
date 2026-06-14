@@ -67,6 +67,7 @@ final class OverviewDisplayView: NSView {
     private var hasFinishedExpanding = false
     private var mouseIdleTimer: Timer?
     private var goneWindowIDs: Set<CGWindowID> = []
+    private var closingWindowIDs: Set<CGWindowID> = []
     private var previewUpdatesSuspended = false
     private var filterMatchingWindowIDs: Set<CGWindowID>?
     /// When true, non-matching cards are hidden (and skipped for hit-testing) rather than dimmed.
@@ -497,6 +498,19 @@ final class OverviewDisplayView: NSView {
     private func applyFocusHaloForCurrentState() {
         guard hasFinishedExpanding else { return }
 
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for descriptor in windowDescriptors {
+            let isFocused = descriptor.id == hoveredWindowID
+            cardLayers[descriptor.id]?.zPosition = isFocused
+                ? 30_000
+                : CGFloat(10_000 - descriptor.zIndex)
+            titleLayers[descriptor.id]?.zPosition = isFocused
+                ? 30_001
+                : CGFloat(20_000 - descriptor.zIndex)
+        }
+        CATransaction.commit()
+
         for (cardWindowID, cardLayer) in cardLayers {
             cardLayer.setHovered(cardWindowID == hoveredWindowID)
         }
@@ -644,13 +658,19 @@ final class OverviewDisplayView: NSView {
     /// each survivor's target frame.
     func animateRelayout(closedWindowID: CGWindowID, duration: CFTimeInterval) {
         guard !goneWindowIDs.contains(closedWindowID) else { return }
+        closingWindowIDs.remove(closedWindowID)
         goneWindowIDs.insert(closedWindowID)
 
         if hoveredWindowID == closedWindowID {
             hoveredWindowID = nil
         }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cardLayers[closedWindowID]?.setClosing(false)
         cardLayers[closedWindowID]?.setFilteredHidden(true)
         titleLayers[closedWindowID]?.setFilteredHidden(true)
+        CATransaction.commit()
 
         animateRelayout(duration: duration)
     }
@@ -674,6 +694,18 @@ final class OverviewDisplayView: NSView {
         goneWindowIDs.remove(windowID)
         cardLayers[windowID]?.setFilteredHidden(false)
         titleLayers[windowID]?.setFilteredHidden(false)
+    }
+
+    func setWindowClosing(_ windowID: CGWindowID, closing: Bool) {
+        if closing {
+            closingWindowIDs.insert(windowID)
+        } else {
+            closingWindowIDs.remove(windowID)
+        }
+        cardLayers[windowID]?.setClosing(closing)
+        if closing, hoveredWindowID == windowID {
+            setHoveredWindow(nil)
+        }
     }
 
     func addNewWindowIcons(_ icons: [(windowID: CGWindowID, pid: pid_t, appName: String, icon: NSImage)]) {
@@ -979,7 +1011,8 @@ final class OverviewDisplayView: NSView {
     private func hitTestCloseButton(at localPoint: CGPoint) -> WindowDescriptor? {
         guard let hoveredWindowID,
               let descriptor = windowDescriptors.first(where: { $0.id == hoveredWindowID }),
-              !goneWindowIDs.contains(descriptor.id) else {
+              !goneWindowIDs.contains(descriptor.id),
+              !closingWindowIDs.contains(descriptor.id) else {
             return nil
         }
         let titleLocal = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
@@ -998,6 +1031,7 @@ final class OverviewDisplayView: NSView {
         windowDescriptors.first { descriptor in
             // Skip gone (closed) windows — they're not clickable.
             guard !goneWindowIDs.contains(descriptor.id) else { return false }
+            guard !closingWindowIDs.contains(descriptor.id) else { return false }
             // In hide mode, non-matching cards are faded out and not clickable.
             if filterHidesNonMatches, filterMatchingWindowIDs?.contains(descriptor.id) == false {
                 return false
@@ -1031,6 +1065,7 @@ private final class WindowCardLayer: CALayer {
     private let targetRect: CGRect
     private let usesMergedTitleStyle: Bool
     private let previewLayer = CALayer()
+    private let closingTintLayer = CALayer()
     private let borderLayer = CAShapeLayer()
 
     init(
@@ -1075,6 +1110,13 @@ private final class WindowCardLayer: CALayer {
         }
         addSublayer(previewLayer)
 
+        closingTintLayer.backgroundColor = NSColor.black.withAlphaComponent(0.94).cgColor
+        closingTintLayer.cornerRadius = 12
+        closingTintLayer.maskedCorners = previewLayer.maskedCorners
+        closingTintLayer.masksToBounds = true
+        closingTintLayer.opacity = 0
+        addSublayer(closingTintLayer)
+
         borderLayer.fillColor = NSColor.clear.cgColor
         borderLayer.strokeColor = NSColor.clear.cgColor
         borderLayer.lineWidth = 1
@@ -1116,6 +1158,16 @@ private final class WindowCardLayer: CALayer {
         CATransaction.setDisableActions(true)
         borderLayer.strokeColor = hovered ? NSColor.systemBlue.cgColor : NSColor.clear.cgColor
         borderLayer.lineWidth = hovered ? 3 : 1
+        CATransaction.commit()
+    }
+
+    func setClosing(_ closing: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        closingTintLayer.opacity = closing ? 1 : 0
+        if closing {
+            borderLayer.strokeColor = NSColor.clear.cgColor
+        }
         CATransaction.commit()
     }
 
@@ -1251,6 +1303,7 @@ private final class WindowCardLayer: CALayer {
 
     private func updateGeometry() {
         previewLayer.frame = bounds
+        closingTintLayer.frame = bounds
         borderLayer.frame = bounds
 
         let r: CGFloat = 12

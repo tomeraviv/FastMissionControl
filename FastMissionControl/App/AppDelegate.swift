@@ -39,14 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
 
         appModel.start()
-        // Build the retained SwiftUI window during startup so opening Settings never pays the
-        // first-render cost on the menu click.
-        _ = settingsWindowEnsuringCreated()
         applyStartupWindowBehavior()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        appModel.refreshPermissions()
+        appModel.refreshPermissionsInBackground()
     }
 
     // Re-launching the agent (Finder / Dock / `open`) is the user's way back to Settings, since it
