@@ -33,7 +33,6 @@ final class AppSettings: ObservableObject {
         case toggleButtonNumber
         case searchMatchAllWords
         case searchHideNonMatches
-        case confirmWindowClose
         case prewarmIntervalSeconds
         case liveRefreshIntervalSeconds
         case livePreviewStartupDelaySeconds
@@ -75,7 +74,7 @@ final class AppSettings: ObservableObject {
             key: .launchAtLogin,
             section: "General",
             title: "Launch at Login",
-            description: "Start Fast Mission Control automatically when you log in. Off until you explicitly enable it.",
+            description: "Start Fast Mission Control automatically when you log in.",
             kind: .toggle(defaultValue: false)
         ),
         SettingDefinition(
@@ -98,13 +97,6 @@ final class AppSettings: ObservableObject {
             title: "Hide Non-Matching Windows",
             description: "Re-layout the overview to show only matching windows. When off, non-matches stay in place but dimmed.",
             kind: .toggle(defaultValue: false)
-        ),
-        SettingDefinition(
-            key: .confirmWindowClose,
-            section: "Window",
-            title: "Confirm Window Close",
-            description: "Show a Yes / No prompt when closing a window with its title-bar ✕. When off, the ✕ closes immediately.",
-            kind: .toggle(defaultValue: true)
         ),
         SettingDefinition(
             key: .prewarmIntervalSeconds,
@@ -355,10 +347,6 @@ final class AppSettings: ObservableObject {
 
     var searchHideNonMatches: Bool {
         bool(.searchHideNonMatches)
-    }
-
-    var confirmWindowClose: Bool {
-        bool(.confirmWindowClose)
     }
 
     var prewarmIntervalNanoseconds: UInt64 {

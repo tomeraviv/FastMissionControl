@@ -32,28 +32,38 @@ final class AXWindowMatcher {
         return best.0
     }
 
-    func strictMatch(
+    func safeMatch(
         title: String?,
         appKitBounds: CGRect,
         candidates: [AXWindowHandle],
-        frameTolerance: CGFloat = 8
+        maximumDistance: CGFloat = 120,
+        ambiguityMargin: CGFloat = 24
     ) -> AXWindowHandle? {
         let targetTitle = normalized(title)
-        let matches = candidates.filter { candidate in
+        let matches = candidates.compactMap { candidate -> (handle: AXWindowHandle, distance: CGFloat)? in
             guard !candidate.isMinimized,
                   normalized(candidate.title) == targetTitle else {
-                return false
+                return nil
             }
 
             let frame = candidate.frame
-            return abs(frame.minX - appKitBounds.minX) <= frameTolerance
-                && abs(frame.minY - appKitBounds.minY) <= frameTolerance
-                && abs(frame.width - appKitBounds.width) <= frameTolerance
-                && abs(frame.height - appKitBounds.height) <= frameTolerance
+            let frameDistance = [
+                abs(frame.minX - appKitBounds.minX),
+                abs(frame.minY - appKitBounds.minY),
+                abs(frame.width - appKitBounds.width),
+                abs(frame.height - appKitBounds.height)
+            ].max() ?? .greatestFiniteMagnitude
+
+            return (candidate, frameDistance)
+        }
+        .sorted { $0.distance < $1.distance }
+
+        guard let best = matches.first, best.distance <= maximumDistance else { return nil }
+        if matches.count > 1, matches[1].distance - best.distance < ambiguityMargin {
+            return nil
         }
 
-        guard matches.count == 1 else { return nil }
-        return matches[0]
+        return best.handle
     }
 
     private func score(targetTitle: String?, targetFrame: CGRect, candidate: AXWindowHandle) -> CGFloat {

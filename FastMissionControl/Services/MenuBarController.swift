@@ -75,7 +75,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         let enabled = isLaunchAtLoginEnabled()
-        launchAtLoginItem.title = enabled ? "Disable Launch at Login" : "Enable Launch at Login…"
+        launchAtLoginItem.title = "Launch at Login"
         launchAtLoginItem.state = enabled ? .on : .off
     }
 

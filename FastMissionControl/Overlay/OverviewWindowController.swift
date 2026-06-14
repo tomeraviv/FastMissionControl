@@ -20,20 +20,14 @@ final class OverviewWindowController {
     private let allWindowDescriptors: [WindowDescriptor]
     private let snapshot: OverviewSnapshot
     private let layoutEngine: SpatialOverviewLayout
-    /// AND vs OR for multi-word filtering, whether non-matches dim in place or are hidden by a
-    /// re-layout, and whether the title-bar ✕ prompts before closing. Captured at open from settings.
+    /// AND vs OR for multi-word filtering and whether non-matches dim in place or are hidden by a
+    /// re-layout. Captured at open from settings.
     private let matchAllWords: Bool
     private let hideNonMatches: Bool
-    private let confirmWindowClose: Bool
     private var goneWindowIDs: Set<CGWindowID> = []
     private var hoveredWindowID: CGWindowID?
     private var selectedWindowID: CGWindowID?
     private var filterText: String = ""
-    /// The window whose close prompt is currently shown (mouse ✕ → Yes/No), if any.
-    private var pendingCloseConfirmation: WindowDescriptor?
-    /// Which button the keyboard focus sits on while the prompt is shown. Resets to No (the safer
-    /// action) each time a prompt appears.
-    private var confirmationFocusedYes = false
     private var hasDismissed = false
     private var mouseIdleTimer: Timer?
     private var isMouseMoving = false
@@ -43,7 +37,6 @@ final class OverviewWindowController {
         layoutEngine: SpatialOverviewLayout,
         matchAllWords: Bool,
         hideNonMatches: Bool,
-        confirmWindowClose: Bool,
         onDismiss: @escaping () -> Void,
         onHoverChanged: @escaping (CGWindowID?) -> Void,
         onMouseMoving: @escaping (Bool) -> Void,
@@ -64,7 +57,6 @@ final class OverviewWindowController {
         self.layoutEngine = layoutEngine
         self.matchAllWords = matchAllWords
         self.hideNonMatches = hideNonMatches
-        self.confirmWindowClose = confirmWindowClose
 
         let primaryDisplayID = snapshot.cursorDisplayID ?? snapshot.displays.first?.id
         self.primaryDisplayID = primaryDisplayID
@@ -84,16 +76,7 @@ final class OverviewWindowController {
                     self?.close()
                 },
                 onWindowSelected: onWindowSelected,
-                onWindowCloseRequested: { [weak self] descriptor in
-                    self?.handleCloseRequest(descriptor: descriptor)
-                },
-                onCloseConfirmationDecided: { [weak self] confirm in
-                    if confirm {
-                        self?.confirmCloseSelected()
-                    } else {
-                        self?.clearCloseConfirmation()
-                    }
-                },
+                onWindowCloseRequested: onWindowCloseRequested,
                 onSearchTextChanged: { [weak self] text in
                     self?.applyFilterTextFromSearchField(text)
                 },
@@ -185,11 +168,6 @@ final class OverviewWindowController {
         guard !goneWindowIDs.contains(windowID) else { return }
         goneWindowIDs.insert(windowID)
 
-        // The closed window's prompt, if any, is moot now.
-        if pendingCloseConfirmation?.id == windowID {
-            clearCloseConfirmation()
-        }
-
         let matching = matchingWindowIDs()
         let remaining = layoutWindows(matching: matching)
         recomputeLayout(for: remaining)
@@ -237,23 +215,6 @@ final class OverviewWindowController {
 
     /// Returns true when the event was handled by the overview (and should not propagate).
     private func handleKey(_ event: NSEvent) -> Bool {
-        // While a close prompt is up the keyboard drives the dialog: arrows / Tab move between Yes
-        // and No, Space / Return select, Esc dismisses. The prompt is modal — other keys are
-        // swallowed so they don't navigate or filter behind it.
-        if pendingCloseConfirmation != nil {
-            switch Int(event.keyCode) {
-            case kVK_Escape:
-                clearCloseConfirmation()
-            case kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow, kVK_Tab:
-                toggleConfirmationFocus()
-            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space:
-                triggerFocusedConfirmation()
-            default:
-                break
-            }
-            return true
-        }
-
         switch Int(event.keyCode) {
         case kVK_Escape:
             if !filterText.isEmpty {
@@ -603,71 +564,6 @@ final class OverviewWindowController {
             selectedWindowID = windowID
         }
 
-        // A close prompt belongs to the focused card; once focus moves away — to another card or to
-        // empty space (windowID == nil) — dismiss it. An unfocused window shouldn't keep a live prompt.
-        if let pending = pendingCloseConfirmation, pending.id != windowID {
-            clearCloseConfirmation()
-        }
-    }
-
-    // MARK: - Window close (mouse ✕)
-
-    /// Clicking the ✕ requests a close. With Confirm Window Close on, show the Yes / No prompt over
-    /// the card; off closes immediately. Clicking the ✕ again on the same card dismisses the prompt.
-    private func handleCloseRequest(descriptor: WindowDescriptor) {
-        guard !goneWindowIDs.contains(descriptor.id) else { return }
-
-        guard confirmWindowClose else {
-            onWindowCloseRequested(descriptor)
-            return
-        }
-
-        if pendingCloseConfirmation?.id == descriptor.id {
-            clearCloseConfirmation()
-            return
-        }
-        pendingCloseConfirmation = descriptor
-        confirmationFocusedYes = false
-        // Hand first responder back from the search field so the dialog's keys (arrows / Tab /
-        // Space / Return / Esc) reach handleKey.
-        resignAllSearchFocus()
-        broadcastCloseConfirmation()
-    }
-
-    private func confirmCloseSelected() {
-        guard let descriptor = pendingCloseConfirmation else { return }
-        pendingCloseConfirmation = nil
-        broadcastCloseConfirmation()
-        onWindowCloseRequested(descriptor)
-    }
-
-    private func clearCloseConfirmation() {
-        guard pendingCloseConfirmation != nil else { return }
-        pendingCloseConfirmation = nil
-        broadcastCloseConfirmation()
-    }
-
-    private func toggleConfirmationFocus() {
-        guard pendingCloseConfirmation != nil else { return }
-        confirmationFocusedYes.toggle()
-        broadcastCloseConfirmation()
-    }
-
-    private func triggerFocusedConfirmation() {
-        if confirmationFocusedYes {
-            confirmCloseSelected()
-        } else {
-            clearCloseConfirmation()
-        }
-    }
-
-    private func broadcastCloseConfirmation() {
-        for panelController in panelControllers {
-            panelController.setCloseConfirmation(
-                descriptor: pendingCloseConfirmation,
-                focusedYes: confirmationFocusedYes
-            )
-        }
     }
 }
 
@@ -688,7 +584,6 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         onBackgroundClick: @escaping () -> Void,
         onWindowSelected: @escaping (WindowDescriptor, Bool) -> Void,
         onWindowCloseRequested: @escaping (WindowDescriptor) -> Void,
-        onCloseConfirmationDecided: @escaping (Bool) -> Void,
         onSearchTextChanged: @escaping (String) -> Void,
         onSearchCommand: @escaping (Selector) -> Bool,
         onShelfItemSelected: @escaping (AppShelfItem) -> Void,
@@ -743,7 +638,6 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         overlayView.onBackgroundClick = onBackgroundClick
         overlayView.onWindowSelected = onWindowSelected
         overlayView.onWindowCloseRequested = onWindowCloseRequested
-        overlayView.onCloseConfirmationDecided = onCloseConfirmationDecided
         overlayView.onSearchTextChanged = onSearchTextChanged
         overlayView.onSearchCommand = onSearchCommand
         overlayView.onShelfItemSelected = onShelfItemSelected
@@ -792,10 +686,6 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
 
     func applyHideFilter(visibleWindowIDs: Set<CGWindowID>, displayText: String) {
         overlayView.applyHideFilter(visibleWindowIDs: visibleWindowIDs, displayText: displayText)
-    }
-
-    func setCloseConfirmation(descriptor: WindowDescriptor?, focusedYes: Bool) {
-        overlayView.setCloseConfirmation(descriptor: descriptor, focusedYes: focusedYes)
     }
 
     func resignSearchFocus() {

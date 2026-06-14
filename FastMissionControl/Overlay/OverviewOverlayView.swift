@@ -33,7 +33,6 @@ final class OverviewDisplayView: NSView {
     var onBackgroundClick: (() -> Void)?
     var onWindowSelected: ((WindowDescriptor, Bool) -> Void)?
     var onWindowCloseRequested: ((WindowDescriptor) -> Void)?
-    var onCloseConfirmationDecided: ((Bool) -> Void)?
     var onSearchTextChanged: ((String) -> Void)?
     var onSearchCommand: ((Selector) -> Bool)?
     var onShelfItemSelected: ((AppShelfItem) -> Void)?
@@ -72,8 +71,6 @@ final class OverviewDisplayView: NSView {
     /// When true, non-matching cards are hidden (and skipped for hit-testing) rather than dimmed.
     private var filterHidesNonMatches = false
     private var searchPill: SearchPillView?
-    private var confirmationChip: ConfirmationChipView?
-    private var confirmationDescriptor: WindowDescriptor?
     /// Window hit on mouseDown; selection runs on mouseUp only when no drag occurred.
     private var pendingWindowSelect: WindowDescriptor?
     private var pendingCloseDescriptor: WindowDescriptor?
@@ -186,7 +183,6 @@ final class OverviewDisplayView: NSView {
         backgroundDimLayer.frame = bounds
         layoutBottomRow()
         layoutSearchPill()
-        layoutConfirmationChip()
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -593,45 +589,6 @@ final class OverviewDisplayView: NSView {
             cardLayers[descriptor.id]?.opacity = matches ? 1.0 : dimOpacity
             titleLayers[descriptor.id]?.opacity = matches ? 1.0 : dimOpacity * 0.4
         }
-    }
-
-    /// Each panel renders the prompt only when it's for a window on its display. The chip is
-    /// centered on the card so the card itself communicates which window is closing.
-    func setCloseConfirmation(descriptor: WindowDescriptor?, focusedYes: Bool) {
-        guard let descriptor, descriptor.displayID == display.id else {
-            confirmationDescriptor = nil
-            confirmationChip?.removeFromSuperview()
-            confirmationChip = nil
-            return
-        }
-
-        confirmationDescriptor = descriptor
-        if confirmationChip == nil {
-            let chip = ConfirmationChipView()
-            chip.wantsLayer = true
-            // Cards sit at zPosition 10_000+, titles at 20_000+; the chip must render above both.
-            chip.layer?.zPosition = 100_000
-            chip.onYes = { [weak self] in self?.onCloseConfirmationDecided?(true) }
-            chip.onNo = { [weak self] in self?.onCloseConfirmationDecided?(false) }
-            addSubview(chip)
-            confirmationChip = chip
-        }
-        confirmationChip?.setFocusedYes(focusedYes)
-        layoutConfirmationChip()
-    }
-
-    private func layoutConfirmationChip() {
-        guard let chip = confirmationChip, let descriptor = confirmationDescriptor else { return }
-        let chipSize = chip.intrinsicContentSize
-        let cardLocal = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
-        let width = min(chipSize.width, max(160, cardLocal.width - 24))
-        let height = chipSize.height
-        chip.frame = CGRect(
-            x: cardLocal.midX - width / 2,
-            y: cardLocal.midY - height / 2,
-            width: width,
-            height: height
-        )
     }
 
     func disableInteractions() {
@@ -1763,153 +1720,6 @@ private final class SearchPillView: NSView, NSTextFieldDelegate {
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         return onCommand?(commandSelector) ?? false
-    }
-}
-
-// MARK: - Confirmation Chip
-
-private final class ConfirmationChipView: NSView {
-    var onYes: (() -> Void)?
-    var onNo: (() -> Void)?
-
-    private let titleLabel = NSTextField(labelWithString: "Close window?")
-    private let yesButton = ConfirmationButton(title: "Yes", style: .destructive)
-    private let noButton = ConfirmationButton(title: "No", style: .defaultAction)
-    private let blurView = NSVisualEffectView()
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 14
-        layer?.masksToBounds = true
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        layer?.borderWidth = 1
-
-        blurView.material = .hudWindow
-        blurView.state = .active
-        blurView.blendingMode = .behindWindow
-        blurView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(blurView)
-
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        titleLabel.textColor = .white
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(titleLabel)
-
-        yesButton.target = self
-        yesButton.action = #selector(handleYes)
-        yesButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(yesButton)
-
-        noButton.target = self
-        noButton.action = #selector(handleNo)
-        noButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(noButton)
-
-        NSLayoutConstraint.activate([
-            blurView.topAnchor.constraint(equalTo: topAnchor),
-            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            yesButton.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 14),
-            yesButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            noButton.leadingAnchor.constraint(equalTo: yesButton.trailingAnchor, constant: 8),
-            noButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            noButton.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
-
-        setFocusedYes(false)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var intrinsicContentSize: NSSize {
-        let titleWidth = titleLabel.intrinsicContentSize.width
-        let buttonWidth = yesButton.intrinsicContentSize.width + 8 + noButton.intrinsicContentSize.width
-        return NSSize(width: 16 + titleWidth + 14 + buttonWidth + 10, height: 48)
-    }
-
-    /// Highlight whichever button the keyboard focus sits on (Yes when `true`, else No).
-    func setFocusedYes(_ focusedYes: Bool) {
-        yesButton.setFocused(focusedYes)
-        noButton.setFocused(!focusedYes)
-    }
-
-    /// Swallow clicks on the chip's empty area so the card beneath isn't activated. Clicks on the
-    /// Yes / No buttons hit them first via normal subview hit-testing.
-    override func mouseDown(with event: NSEvent) {}
-
-    @objc
-    private func handleYes() {
-        onYes?()
-    }
-
-    @objc
-    private func handleNo() {
-        onNo?()
-    }
-}
-
-private final class ConfirmationButton: NSButton {
-    enum Style {
-        case defaultAction
-        case destructive
-    }
-
-    private let style: Style
-
-    init(title: String, style: Style) {
-        self.style = style
-        super.init(frame: .zero)
-
-        self.title = title
-        self.isBordered = false
-        self.wantsLayer = true
-        self.contentTintColor = .white
-        self.font = .systemFont(ofSize: 13, weight: .semibold)
-        self.layer?.cornerRadius = 7
-
-        setFocused(false)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: 60, height: 28)
-    }
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-
-    /// Keep the fill constant on mouse hover / press — only the keyboard focus ring changes the
-    /// look, so the background never flashes the system accent color.
-    override func highlight(_ flag: Bool) {}
-
-    /// Keyboard focus brightens the border (same hue); the fill stays steady.
-    func setFocused(_ focused: Bool) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        switch style {
-        case .destructive:
-            layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.30).cgColor
-            layer?.borderColor = NSColor.systemRed.withAlphaComponent(focused ? 0.95 : 0.50).cgColor
-        case .defaultAction:
-            layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
-            layer?.borderColor = NSColor.white.withAlphaComponent(focused ? 0.95 : 0.45).cgColor
-        }
-        layer?.borderWidth = focused ? 2 : 1
-        CATransaction.commit()
     }
 }
 

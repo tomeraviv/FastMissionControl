@@ -112,7 +112,7 @@ final class WindowActivationService {
         guard windowStillBelongsToExpectedProcess(descriptor) else { return false }
 
         let handles = loadAXWindows(for: descriptor.pid)
-        guard let handle = matcher.strictMatch(
+        guard let handle = matcher.safeMatch(
             title: descriptor.title,
             appKitBounds: descriptor.appKitBounds,
             candidates: handles

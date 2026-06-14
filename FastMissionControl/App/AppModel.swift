@@ -502,7 +502,6 @@ final class AppModel: ObservableObject {
             layoutEngine: layoutEngine,
             matchAllWords: settings.searchMatchAllWords,
             hideNonMatches: settings.searchHideNonMatches,
-            confirmWindowClose: settings.confirmWindowClose,
             onDismiss: { [weak self] in
                 guard let self else { return }
                 self.resumePreviewUpdatesTask?.cancel()

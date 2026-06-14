@@ -17,13 +17,16 @@ struct FastMissionControlTests {
         #expect(settings.launchAtLogin == false)
     }
 
-    @Test func strictWindowMatchRequiresUniqueTitleAndFrame() {
+    @Test func safeWindowMatchToleratesDriftAndRejectsAmbiguity() {
         let matcher = AXWindowMatcher()
         let targetFrame = CGRect(x: 100, y: 200, width: 800, height: 600)
-        let expected = makeAXWindowHandle(title: "Document", frame: targetFrame)
+        let expected = makeAXWindowHandle(
+            title: "Document",
+            frame: targetFrame.offsetBy(dx: 18, dy: -12)
+        )
 
         #expect(
-            matcher.strictMatch(
+            matcher.safeMatch(
                 title: "Document",
                 appKitBounds: targetFrame,
                 candidates: [expected]
@@ -32,19 +35,22 @@ struct FastMissionControlTests {
 
         let wrongTitle = makeAXWindowHandle(title: "Other Document", frame: targetFrame)
         #expect(
-            matcher.strictMatch(
+            matcher.safeMatch(
                 title: "Document",
                 appKitBounds: targetFrame,
                 candidates: [wrongTitle]
             ) == nil
         )
 
-        let duplicate = makeAXWindowHandle(title: "Document", frame: targetFrame)
+        let similarlyClose = makeAXWindowHandle(
+            title: "Document",
+            frame: targetFrame.offsetBy(dx: 20, dy: -12)
+        )
         #expect(
-            matcher.strictMatch(
+            matcher.safeMatch(
                 title: "Document",
                 appKitBounds: targetFrame,
-                candidates: [expected, duplicate]
+                candidates: [expected, similarlyClose]
             ) == nil
         )
     }

@@ -46,7 +46,7 @@ struct ContentView: View {
                             action: model.requestAccessibility
                         )
                     }
-                    .padding(.vertical, 6)
+                    .padding(12)
                 } label: {
                     Text("Permissions")
                         .font(.system(size: 13, weight: .semibold))
@@ -111,6 +111,7 @@ struct ContentView: View {
                         }
                     }
                     .font(.system(size: 13))
+                    .padding(12)
                 } label: {
                     Text("State")
                         .font(.system(size: 13, weight: .semibold))
