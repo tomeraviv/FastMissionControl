@@ -111,14 +111,10 @@ final class WindowActivationService {
     func closeWindow(descriptor: WindowDescriptor) -> Bool {
         guard windowStillBelongsToExpectedProcess(descriptor) else { return false }
 
-        let handles = loadAXWindows(for: descriptor.pid)
-        guard let handle = matcher.safeMatch(
-            title: descriptor.title,
-            appKitBounds: descriptor.appKitBounds,
-            candidates: handles
-        ) else {
-            return false
-        }
+        let handle = descriptor.axWindow ?? resolveWindowHandle(for: descriptor)
+        descriptor.axWindow = handle
+
+        guard let handle else { return false }
 
         var closeButton: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(

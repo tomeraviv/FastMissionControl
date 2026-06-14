@@ -39,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
 
         appModel.start()
+        // Build the retained SwiftUI window during startup so opening Settings never pays the
+        // first-render cost on the menu click.
+        _ = settingsWindowEnsuringCreated()
         applyStartupWindowBehavior()
     }
 

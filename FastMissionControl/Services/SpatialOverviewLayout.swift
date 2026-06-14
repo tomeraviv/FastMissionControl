@@ -434,7 +434,7 @@ final class SpatialOverviewLayout {
     }
 
     private var titleBarGap: CGFloat {
-        settings.layoutTitleBarGap
+        settings.mergedTitleStyle ? 0 : settings.layoutTitleBarGap
     }
 
     private var titleBarHeight: CGFloat {

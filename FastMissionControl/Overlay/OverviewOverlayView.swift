@@ -45,6 +45,7 @@ final class OverviewDisplayView: NSView {
     private let display: DisplayOverview
     private let snapshot: OverviewSnapshot
     private let showsShelf: Bool
+    private let usesMergedTitleStyle: Bool
     private let displayOrigin: CGPoint
     private let displaySupportsEDR: Bool
     private let windowDescriptors: [WindowDescriptor]
@@ -88,11 +89,13 @@ final class OverviewDisplayView: NSView {
     init(
         display: DisplayOverview,
         snapshot: OverviewSnapshot,
-        showsShelf: Bool
+        showsShelf: Bool,
+        usesMergedTitleStyle: Bool
     ) {
         self.display = display
         self.snapshot = snapshot
         self.showsShelf = showsShelf
+        self.usesMergedTitleStyle = usesMergedTitleStyle
         displayOrigin = display.localFrame.origin
         displaySupportsEDR = (Self.screen(for: display.id)?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1) > 1
         windowDescriptors = snapshot.windows
@@ -856,13 +859,18 @@ final class OverviewDisplayView: NSView {
             let cardLayer = WindowCardLayer(
                 descriptor: descriptor,
                 displayOrigin: displayOrigin,
-                displaySupportsEDR: displaySupportsEDR
+                displaySupportsEDR: displaySupportsEDR,
+                usesMergedTitleStyle: usesMergedTitleStyle
             )
             cardLayer.zPosition = CGFloat(10_000 - descriptor.zIndex)
             rootLayer.addSublayer(cardLayer)
             cardLayers[descriptor.id] = cardLayer
 
-            let titleLayer = WindowTitleLayer(descriptor: descriptor, displayOrigin: displayOrigin)
+            let titleLayer = WindowTitleLayer(
+                descriptor: descriptor,
+                displayOrigin: displayOrigin,
+                usesMergedTitleStyle: usesMergedTitleStyle
+            )
             titleLayer.zPosition = CGFloat(20_000 - descriptor.zIndex)
             rootLayer.addSublayer(titleLayer)
             titleLayers[descriptor.id] = titleLayer
@@ -1021,12 +1029,19 @@ final class OverviewDisplayView: NSView {
 private final class WindowCardLayer: CALayer {
     private let sourceRect: CGRect
     private let targetRect: CGRect
+    private let usesMergedTitleStyle: Bool
     private let previewLayer = CALayer()
     private let borderLayer = CAShapeLayer()
 
-    init(descriptor: WindowDescriptor, displayOrigin: CGPoint, displaySupportsEDR: Bool) {
+    init(
+        descriptor: WindowDescriptor,
+        displayOrigin: CGPoint,
+        displaySupportsEDR: Bool,
+        usesMergedTitleStyle: Bool
+    ) {
         sourceRect = descriptor.sourceFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
         targetRect = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
+        self.usesMergedTitleStyle = usesMergedTitleStyle
 
         super.init()
 
@@ -1043,9 +1058,14 @@ private final class WindowCardLayer: CALayer {
 
         previewLayer.contentsGravity = .resizeAspectFill
         previewLayer.cornerRadius = 12
-        // Square the top edge so it meets the title chip above as one continuous shape.
-        // (The flipped parent NSView means maxY-side corners render at the visual bottom.)
-        previewLayer.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+        previewLayer.maskedCorners = usesMergedTitleStyle
+            ? [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            : [
+                .layerMinXMinYCorner,
+                .layerMaxXMinYCorner,
+                .layerMinXMaxYCorner,
+                .layerMaxXMaxYCorner
+            ]
         previewLayer.masksToBounds = true
         previewLayer.minificationFilter = .trilinear
         previewLayer.magnificationFilter = .trilinear
@@ -1070,6 +1090,7 @@ private final class WindowCardLayer: CALayer {
 
         sourceRect = layer.sourceRect
         targetRect = layer.targetRect
+        usesMergedTitleStyle = layer.usesMergedTitleStyle
         super.init(layer: layer)
     }
 
@@ -1232,9 +1253,20 @@ private final class WindowCardLayer: CALayer {
         previewLayer.frame = bounds
         borderLayer.frame = bounds
 
-        // Border: open at the top — the title chip above draws the matching upper half so the two
-        // pieces fuse into one continuous focus ring at the seam.
         let r: CGFloat = 12
+        guard usesMergedTitleStyle else {
+            let roundedPath = CGPath(
+                roundedRect: bounds,
+                cornerWidth: r,
+                cornerHeight: r,
+                transform: nil
+            )
+            borderLayer.path = roundedPath
+            shadowPath = roundedPath
+            return
+        }
+
+        // Leave the touching edge open so the title and thumbnail share one focus ring.
         let w = bounds.width
         let h = bounds.height
         let borderPath = CGMutablePath()
@@ -1263,21 +1295,28 @@ private final class WindowTitleLayer: CALayer {
     private let closeGlyphLayer = CAShapeLayer()
     private let appName: String
     private let windowTitle: String?
+    private let usesMergedTitleStyle: Bool
 
-    init(descriptor: WindowDescriptor, displayOrigin: CGPoint) {
+    init(descriptor: WindowDescriptor, displayOrigin: CGPoint, usesMergedTitleStyle: Bool) {
         let localFrame = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
         self.appName = descriptor.appName
         self.windowTitle = descriptor.title
+        self.usesMergedTitleStyle = usesMergedTitleStyle
 
         super.init()
 
         bounds = CGRect(origin: .zero, size: localFrame.size)
         position = CGPoint(x: localFrame.midX, y: localFrame.midY)
-        cornerRadius = 12
-        maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        cornerRadius = usesMergedTitleStyle ? 12 : 10
+        maskedCorners = usesMergedTitleStyle
+            ? [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            : [
+                .layerMinXMinYCorner,
+                .layerMaxXMinYCorner,
+                .layerMinXMaxYCorner,
+                .layerMaxXMaxYCorner
+            ]
         backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
-        // The default per-layer border draws all four sides; the borderLayer below replaces it
-        // with an open-bottom path so it fuses with the card's open-top border at the seam.
         borderColor = NSColor.clear.cgColor
         borderWidth = 0
         isHidden = true
@@ -1322,10 +1361,10 @@ private final class WindowTitleLayer: CALayer {
     func setFocused(_ focused: Bool) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        borderLayer.strokeColor = focused
+        borderLayer.strokeColor = focused && usesMergedTitleStyle
             ? NSColor.systemBlue.cgColor
             : NSColor.white.withAlphaComponent(0.10).cgColor
-        borderLayer.lineWidth = focused ? 3 : 1
+        borderLayer.lineWidth = focused && usesMergedTitleStyle ? 3 : 1
         closeButtonLayer.isHidden = !focused
         CATransaction.commit()
     }
@@ -1336,6 +1375,7 @@ private final class WindowTitleLayer: CALayer {
         }
         self.appName = layer.appName
         self.windowTitle = layer.windowTitle
+        self.usesMergedTitleStyle = layer.usesMergedTitleStyle
         super.init(layer: layer)
     }
 
@@ -1450,8 +1490,18 @@ private final class WindowTitleLayer: CALayer {
             maxWidth: textWidth
         )
 
-        // Inverted-U border: top + sides only, leaving the bottom open to meet the card's
-        // open-top border at the seam. Same corner radius as the card.
+        borderLayer.frame = bounds
+        guard usesMergedTitleStyle else {
+            borderLayer.path = CGPath(
+                roundedRect: bounds,
+                cornerWidth: 10,
+                cornerHeight: 10,
+                transform: nil
+            )
+            return
+        }
+
+        // Leave the touching edge open so the title and thumbnail share one focus ring.
         let r: CGFloat = 12
         let w = bounds.width
         let h = bounds.height
@@ -1462,7 +1512,6 @@ private final class WindowTitleLayer: CALayer {
         borderPath.addLine(to: CGPoint(x: w - r, y: 0))
         borderPath.addQuadCurve(to: CGPoint(x: w, y: r), control: CGPoint(x: w, y: 0))
         borderPath.addLine(to: CGPoint(x: w, y: h))
-        borderLayer.frame = bounds
         borderLayer.path = borderPath
     }
 

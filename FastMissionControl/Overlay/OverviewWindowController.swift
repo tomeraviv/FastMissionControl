@@ -37,6 +37,7 @@ final class OverviewWindowController {
         layoutEngine: SpatialOverviewLayout,
         matchAllWords: Bool,
         hideNonMatches: Bool,
+        usesMergedTitleStyle: Bool,
         onDismiss: @escaping () -> Void,
         onHoverChanged: @escaping (CGWindowID?) -> Void,
         onMouseMoving: @escaping (Bool) -> Void,
@@ -66,6 +67,7 @@ final class OverviewWindowController {
                 display: display,
                 snapshot: snapshot,
                 showsShelf: display.id == primaryDisplayID,
+                usesMergedTitleStyle: usesMergedTitleStyle,
                 onHoverChanged: { [weak self] windowID in
                     self?.setHoveredWindow(windowID)
                 },
@@ -579,6 +581,7 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         display: DisplayOverview,
         snapshot: OverviewSnapshot,
         showsShelf: Bool,
+        usesMergedTitleStyle: Bool,
         onHoverChanged: @escaping (CGWindowID?) -> Void,
         onMouseActivity: @escaping () -> Void,
         onBackgroundClick: @escaping () -> Void,
@@ -595,7 +598,8 @@ private final class OverviewDisplayPanelController: NSWindowController, NSWindow
         overlayView = OverviewDisplayView(
             display: display,
             snapshot: snapshot,
-            showsShelf: showsShelf
+            showsShelf: showsShelf,
+            usesMergedTitleStyle: usesMergedTitleStyle
         )
 
         let panel = OverviewPanel(

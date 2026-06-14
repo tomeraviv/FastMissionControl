@@ -502,6 +502,7 @@ final class AppModel: ObservableObject {
             layoutEngine: layoutEngine,
             matchAllWords: settings.searchMatchAllWords,
             hideNonMatches: settings.searchHideNonMatches,
+            usesMergedTitleStyle: settings.mergedTitleStyle,
             onDismiss: { [weak self] in
                 guard let self else { return }
                 self.resumePreviewUpdatesTask?.cancel()

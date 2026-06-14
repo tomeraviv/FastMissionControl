@@ -30,6 +30,7 @@ struct SettingDefinition: Identifiable {
 final class AppSettings: ObservableObject {
     enum Key: String, CaseIterable, Identifiable {
         case launchAtLogin
+        case mergedTitleStyle
         case toggleButtonNumber
         case searchMatchAllWords
         case searchHideNonMatches
@@ -75,6 +76,13 @@ final class AppSettings: ObservableObject {
             section: "General",
             title: "Launch at Login",
             description: "Start Fast Mission Control automatically when you log in.",
+            kind: .toggle(defaultValue: false)
+        ),
+        SettingDefinition(
+            key: .mergedTitleStyle,
+            section: "Appearance",
+            title: "Merged Title Style",
+            description: "Join each title bar to its window preview. When off, use the default Floating Title Style.",
             kind: .toggle(defaultValue: false)
         ),
         SettingDefinition(
@@ -172,8 +180,8 @@ final class AppSettings: ObservableObject {
             key: .layoutTitleBarGap,
             section: "Layout",
             title: "Title Bar Gap",
-            description: "Gap between the title bar chip and the thumbnail body.",
-            kind: .double(defaultValue: 0.0, range: 0.0...30.0, step: 1.0)
+            description: "Gap between the floating title chip and the thumbnail body.",
+            kind: .double(defaultValue: 6.0, range: 0.0...30.0, step: 1.0)
         ),
         SettingDefinition(
             key: .layoutTitleBarHeight,
@@ -335,6 +343,10 @@ final class AppSettings: ObservableObject {
 
     var launchAtLogin: Bool {
         bool(.launchAtLogin)
+    }
+
+    var mergedTitleStyle: Bool {
+        bool(.mergedTitleStyle)
     }
 
     var toggleButtonNumber: Int {
