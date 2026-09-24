@@ -17,9 +17,9 @@ final class WindowActivationService {
     /// Bring the *application* to front immediately.  This is a
     /// cheap NSRunningApplication call — no AX involved — so the
     /// target app is visible the instant our overlay hides.
-    func activateAppFast(pid: pid_t) {
+    func activateAppFast(pid: pid_t, allWindows: Bool = true) {
         let app = NSRunningApplication(processIdentifier: pid)
-        _ = app?.activate(options: [.activateAllWindows])
+        _ = app?.activate(options: allWindows ? [.activateAllWindows] : [])
     }
 
     // MARK: - Pre-resolution (call while overlay is still open)

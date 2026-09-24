@@ -50,8 +50,10 @@ final class WindowDescriptor: ObservableObject, Identifiable {
     var targetFrame: CGRect = .zero
     var titleBarFrame: CGRect = .zero
 
-    /// Live/still capture; same `CGImage` instance may be reused across frames — bump `previewImageRevision` via `updatePreviewImage`.
+    /// Both capture engines publish through the same revision, without converting stream surfaces
+    /// into CGImages on every frame.
     private(set) var previewImage: CGImage?
+    private(set) var streamFrame: WindowStreamFrame?
     @Published private(set) var previewImageRevision: UInt64 = 0
 
     init(
@@ -86,9 +88,18 @@ final class WindowDescriptor: ObservableObject, Identifiable {
     }
 
     func updatePreviewImage(_ image: CGImage?) {
+        streamFrame = nil
         previewImage = image
         previewImageRevision &+= 1
     }
+
+    func updateStreamFrame(_ frame: WindowStreamFrame) {
+        previewImage = nil
+        streamFrame = frame
+        previewImageRevision &+= 1
+    }
+
+    var hasPreview: Bool { previewImage != nil || streamFrame != nil }
 
     var sortTitle: String {
         if let title, !title.isEmpty {

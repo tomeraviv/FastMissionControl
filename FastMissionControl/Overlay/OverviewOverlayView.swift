@@ -38,9 +38,6 @@ final class OverviewDisplayView: NSView {
     var onShelfItemSelected: ((AppShelfItem) -> Void)?
     var onDesktopRequested: (() -> Void)?
     var onNewWindowSelected: ((CGWindowID, pid_t) -> Void)?
-    /// True while the user is dragging a window card (live previews pause to keep input smooth).
-    var onInteractionChanged: ((Bool) -> Void)?
-    var onMouseActivity: (() -> Void)?
 
     private let display: DisplayOverview
     private let snapshot: OverviewSnapshot
@@ -65,10 +62,11 @@ final class OverviewDisplayView: NSView {
     /// Mid-open, the title chip and card body sit in different places, so the focus halo would
     /// render split. Suppress halo updates until the open animation lands.
     private var hasFinishedExpanding = false
-    private var mouseIdleTimer: Timer?
+    private var isDismissing = false
     private var goneWindowIDs: Set<CGWindowID> = []
     private var closingWindowIDs: Set<CGWindowID> = []
     private var previewUpdatesSuspended = false
+    private var allowsInitialPreviewImages = false
     private var filterMatchingWindowIDs: Set<CGWindowID>?
     /// When true, non-matching cards are hidden (and skipped for hit-testing) rather than dimmed.
     private var filterHidesNonMatches = false
@@ -204,7 +202,6 @@ final class OverviewDisplayView: NSView {
         }
 
         setHoveredWindow(hitTestWindow(at: convert(event.locationInWindow, from: nil))?.id)
-        onMouseActivity?()
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -228,6 +225,7 @@ final class OverviewDisplayView: NSView {
         }
 
         if let descriptor = hitTestWindow(at: localPoint) {
+            setHoveredWindow(descriptor.id)
             pendingWindowSelect = descriptor
             pendingWindowSelectOrigin = localPoint
             pendingWindowSelectDidDrag = false
@@ -263,7 +261,6 @@ final class OverviewDisplayView: NSView {
             if hypot(dx, dy) >= pendingWindowSelectDragThreshold {
                 pendingWindowSelectDidDrag = true
                 lastDragLocalPoint = localPoint
-                onInteractionChanged?(true)
                 bringDraggedWindowToFront(descriptor)
             }
             return
@@ -294,9 +291,6 @@ final class OverviewDisplayView: NSView {
         let closeDescriptor = pendingCloseDescriptor
 
         defer {
-            if didDrag {
-                onInteractionChanged?(false)
-            }
             if didDrag, let descriptor = descriptorForDrag {
                 restoreDraggedWindowZOrder(for: descriptor)
             }
@@ -430,26 +424,41 @@ final class OverviewDisplayView: NSView {
         isExpanded = true
         hasFinishedExpanding = false
 
-        let titleDuration = max(duration * 1.15, 0)
-
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isExpanded, !self.isDismissing else { return }
+                self.hasFinishedExpanding = true
+                self.applyFocusHaloForCurrentState()
+                for cardLayer in self.cardLayers.values {
+                    cardLayer.setIdentitySuppressed(false)
+                }
+                for titleLayer in self.titleLayers.values {
+                    titleLayer.setVisible(true)
+                }
+            }
+        }
         backgroundDimLayer.opacity = 1
 
         // Cap at 0.99 so macOS doesn't consider underlying windows fully occluded —
         // otherwise the compositor stops updating them and ScreenCaptureKit returns stale frames.
         wallpaperLayer.opacity = 0.99
 
-        for titleLayer in titleLayers.values {
-            titleLayer.animateToVisible(duration: titleDuration)
-        }
         for cardLayer in cardLayers.values {
             cardLayer.animateToExpanded(duration: duration)
         }
+        CATransaction.commit()
+    }
 
-        // Once the cards have landed at their target positions, applying the halo is safe.
-        DispatchQueue.main.asyncAfter(deadline: .now() + max(duration, 0)) { [weak self] in
-            guard let self else { return }
-            self.hasFinishedExpanding = true
-            self.applyFocusHaloForCurrentState()
+    func prepareForDismissal() {
+        isDismissing = true
+        hasFinishedExpanding = false
+        for cardLayer in cardLayers.values {
+            cardLayer.setIdentitySuppressed(true)
+        }
+        for titleLayer in titleLayers.values {
+            titleLayer.setVisible(false)
         }
     }
 
@@ -458,10 +467,8 @@ final class OverviewDisplayView: NSView {
             return
         }
 
+        prepareForDismissal()
         isExpanded = false
-        hasFinishedExpanding = false
-        mouseIdleTimer?.invalidate()
-        mouseIdleTimer = nil
         if let selectedWindowID {
             bringWindowToFrontForDismissal(selectedWindowID)
         }
@@ -609,46 +616,20 @@ final class OverviewDisplayView: NSView {
     }
 
     func disableInteractions() {
+        prepareForDismissal()
         window?.acceptsMouseMovedEvents = false
         setHoveredWindow(nil)
     }
 
-    func notifyMouseActivity() {
-        setWallpaperOpaque(true)
-    }
-
     func close() {
-        mouseIdleTimer?.invalidate()
-        mouseIdleTimer = nil
+        isExpanded = false
+        prepareForDismissal()
         previewObservers.removeAll()
 
         for cardLayer in cardLayers.values {
             cardLayer.clearRetainedContents()
         }
         wallpaperLayer.contents = nil
-    }
-
-    private var wallpaperIsOpaque = false
-
-    private func setWallpaperOpaque(_ opaque: Bool) {
-        mouseIdleTimer?.invalidate()
-        mouseIdleTimer = nil
-
-        if opaque != wallpaperIsOpaque {
-            wallpaperIsOpaque = opaque
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            wallpaperLayer.opacity = opaque ? 1.0 : 0.99
-            CATransaction.commit()
-        }
-
-        if opaque, isExpanded {
-            mouseIdleTimer = Timer.scheduledTimer(withTimeInterval: 0.005, repeats: false) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.setWallpaperOpaque(false)
-                }
-            }
-        }
     }
 
     // MARK: - Live inventory updates
@@ -907,23 +888,26 @@ final class OverviewDisplayView: NSView {
             rootLayer.addSublayer(titleLayer)
             titleLayers[descriptor.id] = titleLayer
 
-            cardLayer.setPreviewImage(descriptor.previewImage)
+            cardLayer.setPreviewContent(from: descriptor)
 
             previewObservers[descriptor.id] = descriptor.$previewImageRevision
                 .dropFirst()
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
                     guard let self else { return }
-                    if self.previewUpdatesSuspended {
+                    let fillsEmptyCard = self.allowsInitialPreviewImages
+                        && self.cardLayers[descriptor.id]?.hasPreviewImage == false
+                    if self.previewUpdatesSuspended && !fillsEmptyCard {
                         self.pendingPreviewUpdateWindowIDs.insert(descriptor.id)
                         return
                     }
-                    self.cardLayers[descriptor.id]?.setPreviewImage(descriptor.previewImage)
+                    self.cardLayers[descriptor.id]?.setPreviewContent(from: descriptor)
                 }
         }
     }
 
-    func setPreviewUpdatesSuspended(_ suspended: Bool) {
+    func setPreviewUpdatesSuspended(_ suspended: Bool, allowInitialImages: Bool = false) {
+        allowsInitialPreviewImages = allowInitialImages
         guard previewUpdatesSuspended != suspended else {
             return
         }
@@ -939,7 +923,7 @@ final class OverviewDisplayView: NSView {
             guard let descriptor = windowDescriptors.first(where: { $0.id == windowID }) else {
                 continue
             }
-            cardLayers[windowID]?.setPreviewImage(descriptor.previewImage)
+            cardLayers[windowID]?.setPreviewContent(from: descriptor)
         }
     }
 
@@ -1065,6 +1049,18 @@ private final class WindowCardLayer: CALayer {
     private let targetRect: CGRect
     private let usesMergedTitleStyle: Bool
     private let previewLayer = CALayer()
+    private var retainedStreamFrame: WindowStreamFrame?
+    private let identityLayer = CALayer()
+    private let identityIconLayer = CALayer()
+    private let identityTitleBackgroundLayer = CALayer()
+    private let identityTitleLayer = CATextLayer()
+    private let identityTitle: String
+    private let identityFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    private var identitySuppressed = true
+    private var isHovered = false
+    private var relayoutGeneration = 0
+    private var isRelayoutAnimating = false
+    private var lastGeometryBounds: CGRect?
     private let closingTintLayer = CALayer()
     private let borderLayer = CAShapeLayer()
 
@@ -1077,6 +1073,7 @@ private final class WindowCardLayer: CALayer {
         sourceRect = descriptor.sourceFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
         targetRect = descriptor.targetFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
         self.usesMergedTitleStyle = usesMergedTitleStyle
+        identityTitle = descriptor.displayTitle
 
         super.init()
 
@@ -1110,6 +1107,34 @@ private final class WindowCardLayer: CALayer {
         }
         addSublayer(previewLayer)
 
+        identityLayer.masksToBounds = true
+        identityLayer.isHidden = true
+        addSublayer(identityLayer)
+
+        identityIconLayer.contents = descriptor.iconCGImage
+        identityIconLayer.contentsGravity = .resizeAspect
+        identityIconLayer.shadowColor = NSColor.black.cgColor
+        identityIconLayer.shadowOpacity = 0.5
+        identityIconLayer.shadowRadius = 6
+        identityIconLayer.shadowOffset = CGSize(width: 0, height: 2)
+        identityLayer.addSublayer(identityIconLayer)
+
+        identityTitleBackgroundLayer.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+        identityTitleBackgroundLayer.cornerRadius = 10
+        identityTitleBackgroundLayer.cornerCurve = .continuous
+        identityLayer.addSublayer(identityTitleBackgroundLayer)
+
+        identityTitleLayer.string = identityTitle
+        identityTitleLayer.font = identityFont
+        identityTitleLayer.fontSize = identityFont.pointSize
+        identityTitleLayer.foregroundColor = NSColor.white.cgColor
+        identityTitleLayer.alignmentMode = .center
+        identityTitleLayer.truncationMode = .end
+        identityTitleLayer.isWrapped = true
+        identityTitleLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        identityTitleLayer.masksToBounds = true
+        identityTitleBackgroundLayer.addSublayer(identityTitleLayer)
+
         closingTintLayer.backgroundColor = NSColor.black.withAlphaComponent(0.94).cgColor
         closingTintLayer.cornerRadius = 12
         closingTintLayer.maskedCorners = previewLayer.maskedCorners
@@ -1133,6 +1158,7 @@ private final class WindowCardLayer: CALayer {
         sourceRect = layer.sourceRect
         targetRect = layer.targetRect
         usesMergedTitleStyle = layer.usesMergedTitleStyle
+        identityTitle = layer.identityTitle
         super.init(layer: layer)
     }
 
@@ -1146,19 +1172,44 @@ private final class WindowCardLayer: CALayer {
         updateGeometry()
     }
 
-    func setPreviewImage(_ image: CGImage?) {
+    func setPreviewContent(from descriptor: WindowDescriptor) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        previewLayer.contents = image
+        retainedStreamFrame = descriptor.streamFrame
+        if let frame = descriptor.streamFrame {
+            previewLayer.contents = frame.surface
+            previewLayer.contentsRect = frame.contentsRect
+        } else {
+            previewLayer.contents = descriptor.previewImage
+            previewLayer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        }
         CATransaction.commit()
     }
 
+    var hasPreviewImage: Bool {
+        previewLayer.contents != nil
+    }
+
     func setHovered(_ hovered: Bool) {
+        isHovered = hovered
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        updateIdentityVisibility()
         borderLayer.strokeColor = hovered ? NSColor.systemBlue.cgColor : NSColor.clear.cgColor
         borderLayer.lineWidth = hovered ? 3 : 1
         CATransaction.commit()
+    }
+
+    func setIdentitySuppressed(_ suppressed: Bool) {
+        identitySuppressed = suppressed
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updateIdentityVisibility()
+        CATransaction.commit()
+    }
+
+    private func updateIdentityVisibility() {
+        identityLayer.isHidden = identitySuppressed || isHovered || isRelayoutAnimating
     }
 
     func setClosing(_ closing: Bool) {
@@ -1176,6 +1227,7 @@ private final class WindowCardLayer: CALayer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         previewLayer.contents = nil
+        retainedStreamFrame = nil
         CATransaction.commit()
     }
 
@@ -1250,6 +1302,9 @@ private final class WindowCardLayer: CALayer {
     /// The bounds jump to the final size immediately and a counter-scale transform fakes the visual
     /// growth/shrink, so the preview renders at full resolution rather than re-decoding mid-flight.
     func animateToNewFrame(_ newLocal: CGRect, duration: CFTimeInterval) {
+        relayoutGeneration += 1
+        let generation = relayoutGeneration
+        isRelayoutAnimating = duration > 0
         let newPosition = CGPoint(x: newLocal.midX, y: newLocal.midY)
         let newSize = newLocal.size
         let oldPosition = presentation()?.position ?? position
@@ -1263,12 +1318,21 @@ private final class WindowCardLayer: CALayer {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        updateIdentityVisibility()
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor in
+                guard let self, self.relayoutGeneration == generation else { return }
+                self.isRelayoutAnimating = false
+                self.setIdentitySuppressed(self.identitySuppressed)
+            }
+        }
         bounds = CGRect(origin: .zero, size: newSize)
         transform = CATransform3DIdentity
         position = newPosition
-        CATransaction.commit()
-
-        guard duration > 0 else { return }
+        guard duration > 0 else {
+            CATransaction.commit()
+            return
+        }
 
         let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
 
@@ -1286,6 +1350,7 @@ private final class WindowCardLayer: CALayer {
 
         add(positionAnim, forKey: "relayoutPosition")
         add(transformAnim, forKey: "relayoutTransform")
+        CATransaction.commit()
     }
 
     /// Fade the card fully out (filter hides it) or back in, with an implicit cross-fade.
@@ -1295,14 +1360,48 @@ private final class WindowCardLayer: CALayer {
 
     private var collapsedTransform: CATransform3D {
         CATransform3DMakeScale(
-            max(sourceRect.width / max(targetRect.width, 1), 0.01),
-            max(sourceRect.height / max(targetRect.height, 1), 0.01),
+            max(sourceRect.width / max(bounds.width, 1), 0.01),
+            max(sourceRect.height / max(bounds.height, 1), 0.01),
             1
         )
     }
 
     private func updateGeometry() {
+        guard lastGeometryBounds != bounds else { return }
+        lastGeometryBounds = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         previewLayer.frame = bounds
+        identityLayer.frame = bounds
+        let horizontalPadding: CGFloat = 14
+        let verticalPadding: CGFloat = 8
+        let availableWidth = max(1, min(bounds.width - 48, 640) - 2 * horizontalPadding)
+        let attributes: [NSAttributedString.Key: Any] = [.font: identityFont]
+        let naturalWidth = ceil((identityTitle as NSString).size(withAttributes: attributes).width)
+        let textWidth = min(availableWidth, naturalWidth)
+        let lineHeight = ceil(identityFont.ascender - identityFont.descender + identityFont.leading)
+        let measuredHeight = (identityTitle as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes
+        ).height
+        let textHeight = min(2 * lineHeight, max(lineHeight, ceil(measuredHeight))) + 4
+        let titleHeight = textHeight + 2 * verticalPadding
+        let titleWidth = textWidth + 2 * horizontalPadding
+        let gap: CGFloat = 12
+        let iconSize = max(0, min(96, bounds.width - 24, bounds.height - titleHeight - gap - 24))
+        let identityTop = (bounds.height - iconSize - gap - titleHeight) / 2
+        identityIconLayer.frame = CGRect(
+            x: (bounds.width - iconSize) / 2, y: identityTop,
+            width: iconSize, height: iconSize
+        )
+        identityTitleBackgroundLayer.frame = CGRect(
+            x: (bounds.width - titleWidth) / 2, y: identityTop + iconSize + gap,
+            width: titleWidth, height: titleHeight
+        )
+        identityTitleLayer.frame = CGRect(
+            x: horizontalPadding, y: verticalPadding, width: textWidth, height: textHeight
+        )
         closingTintLayer.frame = bounds
         borderLayer.frame = bounds
 
@@ -1349,6 +1448,10 @@ private final class WindowTitleLayer: CALayer {
     private let appName: String
     private let windowTitle: String?
     private let usesMergedTitleStyle: Bool
+    private var lastGeometryBounds: CGRect?
+    private var labelVisible = false
+    private var isRelayoutAnimating = false
+    private var relayoutGeneration = 0
 
     init(descriptor: WindowDescriptor, displayOrigin: CGPoint, usesMergedTitleStyle: Bool) {
         let localFrame = descriptor.titleBarFrame.offsetBy(dx: -displayOrigin.x, dy: -displayOrigin.y)
@@ -1443,48 +1546,42 @@ private final class WindowTitleLayer: CALayer {
     }
 
     func setVisible(_ visible: Bool) {
+        labelVisible = visible
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        isHidden = !visible
+        isHidden = !visible || isRelayoutAnimating
         opacity = visible ? 1 : 0
         CATransaction.commit()
     }
 
-    func animateToVisible(duration: CFTimeInterval) {
-        let timing = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        isHidden = false
-        opacity = 0
-        CATransaction.commit()
-
-        guard duration > 0 else {
-            opacity = 1
-            return
-        }
-
-        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
-        opacityAnimation.fromValue = Float(0)
-        opacityAnimation.toValue = Float(1)
-        opacityAnimation.duration = duration
-        opacityAnimation.timingFunction = timing
-        opacity = 1
-        add(opacityAnimation, forKey: "opacityIn")
-    }
-
     /// Animate the title chip to follow its card to a new layout-space frame (filter re-layout).
     func animateToNewFrame(_ newLocal: CGRect, duration: CFTimeInterval) {
+        relayoutGeneration += 1
+        let generation = relayoutGeneration
+        isRelayoutAnimating = duration > 0
         let newPosition = CGPoint(x: newLocal.midX, y: newLocal.midY)
         let oldPosition = presentation()?.position ?? position
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        isHidden = !labelVisible || isRelayoutAnimating
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor in
+                guard let self, self.relayoutGeneration == generation else { return }
+                self.isRelayoutAnimating = false
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.isHidden = !self.labelVisible
+                CATransaction.commit()
+            }
+        }
         position = newPosition
         bounds = CGRect(origin: .zero, size: newLocal.size)
-        CATransaction.commit()
 
-        guard duration > 0 else { return }
+        guard duration > 0 else {
+            CATransaction.commit()
+            return
+        }
 
         let positionAnim = CABasicAnimation(keyPath: "position")
         positionAnim.fromValue = oldPosition
@@ -1492,6 +1589,7 @@ private final class WindowTitleLayer: CALayer {
         positionAnim.duration = duration
         positionAnim.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
         add(positionAnim, forKey: "relayoutPosition")
+        CATransaction.commit()
     }
 
     /// Fade the title fully out (filter hides its card) or back in.
@@ -1500,6 +1598,11 @@ private final class WindowTitleLayer: CALayer {
     }
 
     private func updateGeometry() {
+        guard lastGeometryBounds != bounds else { return }
+        lastGeometryBounds = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         let iconSize: CGFloat = 28
         iconLayer.frame = CGRect(x: 10, y: (bounds.height - iconSize) / 2, width: iconSize, height: iconSize)
 

@@ -31,6 +31,17 @@ final class AppSettings: ObservableObject {
     enum Key: String, CaseIterable, Identifiable {
         case launchAtLogin
         case mergedTitleStyle
+        case streamingPreviews
+        case rightSizeScreenshots
+        case publishScreenshotsImmediately
+        case reuseScreenshotSetup
+        case warmPreviewsImmediately
+        case fillMissingPreviewsImmediately
+        case preloadWindowSelection
+        case limitStillCaptureConcurrency
+        case reuseRecentPreviews
+        case deferInventoryDuringOpening
+        case activateOnlySelectedWindow
         case toggleButtonNumber
         case searchMatchAllWords
         case searchHideNonMatches
@@ -84,6 +95,83 @@ final class AppSettings: ObservableObject {
             title: "Merged Title Style",
             description: "Join each title bar to its window preview. When off, use the default Floating Title Style.",
             kind: .toggle(defaultValue: false)
+        ),
+        SettingDefinition(
+            key: .streamingPreviews,
+            section: "Performance",
+            title: "Streaming Window Previews [new]",
+            description: "Use persistent per-window streams and GPU-backed frames. Off uses repeated screenshots. Reopen the overview after changing to compare. Opening never waits for capture.",
+            kind: .toggle(defaultValue: false)
+        ),
+        SettingDefinition(
+            key: .rightSizeScreenshots,
+            section: "Performance",
+            title: "Right-Size Screenshots [new]",
+            description: "Capture at the preview's display resolution, capped at 720 pixels for live updates and 1,000 for still images. Off uses the previous sizing, which can capture more pixels.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .publishScreenshotsImmediately,
+            section: "Performance",
+            title: "Show Screenshots as Ready [new]",
+            description: "Update each live preview as its screenshot finishes. Off waits for the whole capture batch. Applies when Streaming Window Previews is off.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .reuseScreenshotSetup,
+            section: "Performance",
+            title: "Reuse Screenshot Setup [new]",
+            description: "Reuse capture filters and settings for unchanged windows. Off rebuilds them for every screenshot. Applies when Streaming Window Previews is off.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .warmPreviewsImmediately,
+            section: "Performance",
+            title: "Warm Previews Immediately [new]",
+            description: "Start warming previews as soon as permissions are ready and after closing the overview. Off waits for the prewarm interval. Opening never waits.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .fillMissingPreviewsImmediately,
+            section: "Performance",
+            title: "Fill Missing Previews Immediately [new]",
+            description: "Capture missing images as soon as possible and fill empty cards even during opening. Off delays captures and image updates until after opening. Neither mode delays the overview.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .preloadWindowSelection,
+            section: "Performance",
+            title: "Preload Window Selection [new]",
+            description: "Prepare every window for selection after opening. This can speed up clicks, but querying other apps may briefly stall the overview. Off resolves only the window you select.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .limitStillCaptureConcurrency,
+            section: "Performance",
+            title: "Limit Initial Capture Load [new]",
+            description: "Limit initial captures using Capture Concurrency, prioritizing empty previews. Off captures all windows at once, which may fill them faster but cause stutter.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .reuseRecentPreviews,
+            section: "Performance",
+            title: "Reuse Recent Previews [new]",
+            description: "Reuse images up to 10 seconds old when a window moves or its title changes, then refresh them. Off requires an exact match. A reused image may briefly show older content.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .deferInventoryDuringOpening,
+            section: "Performance",
+            title: "Defer Window Polling During Opening [new]",
+            description: "Start checking for new or closed windows after the opening animation. Off allows polling during the animation, including slow animations.",
+            kind: .toggle(defaultValue: true)
+        ),
+        SettingDefinition(
+            key: .activateOnlySelectedWindow,
+            section: "Performance",
+            title: "Avoid Raising All App Windows [new]",
+            description: "Activate the app and raise the selected window without requesting all its windows at once. Off restores the all-windows activation behavior.",
+            kind: .toggle(defaultValue: true)
         ),
         SettingDefinition(
             key: .toggleButtonNumber,
@@ -257,7 +345,7 @@ final class AppSettings: ObservableObject {
             key: .suspendedPreviewIntervalSeconds,
             section: "Previews",
             title: "Suspended Preview Interval",
-            description: "Polling cadence while dragging or when preview updates are suspended.",
+            description: "Polling cadence while preview updates are suspended for an animation or initial captures.",
             kind: .double(defaultValue: 0.09, range: 0.01...0.5, step: 0.005)
         ),
         SettingDefinition(
