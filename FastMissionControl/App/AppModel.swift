@@ -142,13 +142,15 @@ final class AppModel: ObservableObject {
     }
 
     func requestScreenRecording() {
+        guard !permissions.screenRecordingGranted else { return }
         permissions.requestScreenRecording()
-        lastStatus = "Screen Recording prompt requested. Re-open the app after granting if macOS keeps access pending."
+        lastStatus = "System Settings opened. Turn on Fast Mission Control under Privacy & Security → Screen & System Audio Recording."
     }
 
     func requestAccessibility() {
+        guard !permissions.accessibilityGranted else { return }
         permissions.requestAccessibility()
-        lastStatus = "Accessibility prompt requested."
+        lastStatus = "System Settings opened. Turn on Fast Mission Control under Privacy & Security → Accessibility."
     }
 
     func requestLaunchAtLoginChange(enabled: Bool) {

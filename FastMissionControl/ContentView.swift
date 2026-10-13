@@ -13,11 +13,13 @@ struct ContentView: View {
 
     @ObservedObject var model: AppModel
     @ObservedObject private var settings: AppSettings
+    @ObservedObject private var permissions: PermissionCoordinator
     @State private var visibleSectionCount = 0
 
     init(model: AppModel) {
         self.model = model
         self.settings = model.settings
+        self.permissions = model.permissions
     }
 
     var body: some View {
@@ -39,14 +41,14 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 14) {
                             PermissionRow(
                                 title: "Screen Recording",
-                                isGranted: model.permissions.screenRecordingGranted,
-                                buttonTitle: "Request",
+                                detail: "Window previews. Turn on Fast Mission Control under Screen & System Audio Recording.",
+                                isGranted: permissions.screenRecordingGranted,
                                 action: model.requestScreenRecording
                             )
                             PermissionRow(
                                 title: "Accessibility",
-                                isGranted: model.permissions.accessibilityGranted,
-                                buttonTitle: "Request",
+                                detail: "Window titles and focusing the window you pick. Turn on Fast Mission Control under Accessibility.",
+                                isGranted: permissions.accessibilityGranted,
                                 action: model.requestAccessibility
                             )
                         }
@@ -139,7 +141,7 @@ struct ContentView: View {
                             model.toggleOverview()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.permissions.isReady)
+                        .disabled(!permissions.isReady)
 
                         Button("Refresh Permissions") {
                             model.refreshPermissions()
@@ -413,25 +415,31 @@ private struct SettingControlRow: View {
 
 private struct PermissionRow: View {
     let title: String
+    let detail: String
     let isGranted: Bool
-    let buttonTitle: String
     let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
-                Text(isGranted ? "Granted" : "Missing")
+                Text(isGranted ? "Granted" : detail)
                     .font(.system(size: 12))
                     .foregroundStyle(isGranted ? .green : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
-            Button(buttonTitle, action: action)
-                .buttonStyle(.bordered)
-                .disabled(isGranted)
+            if isGranted {
+                Text("On")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.green)
+            } else {
+                Button("Open Settings", action: action)
+                    .buttonStyle(.bordered)
+            }
         }
     }
 }
